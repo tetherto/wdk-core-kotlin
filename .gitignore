@@ -8,6 +8,9 @@ build/
 *.apk
 *.aar
 
+# Native dependencies (developer-supplied, not committed)
+libs/
+
 # Local configuration
 local.properties
 .idea/
