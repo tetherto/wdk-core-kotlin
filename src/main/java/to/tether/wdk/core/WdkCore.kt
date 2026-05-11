@@ -311,15 +311,17 @@ class WdkCore(private val context: Context) : Closeable {
 
     override fun close() {
         if (closed.getAndSet(true)) return
-        // Close IPC to cancel pending reads
+
+        ipcHandler = null
+
         ipc?.close()
         ipc = null
-        // Quit handler thread
-        ipcThread?.quitSafely()
+
+        val thread = ipcThread
         ipcThread = null
-        ipcHandler = null
-        // Terminate worklet (native thread exits asynchronously)
-        worklet.terminate()
+        thread?.quitSafely()
+        thread?.join()
+
         isWorkletStarted = false
         readBuffer = ByteArray(0)
         incomingData.clear()
