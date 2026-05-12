@@ -3,8 +3,16 @@ package to.tether.wdk.core
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -14,6 +22,7 @@ import to.holepunch.bare.kit.Worklet
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -24,22 +33,27 @@ class WdkCore(private val context: Context) : Closeable {
     private val worklet = Worklet(null)
     private var ipc: IPC? = null
     private val requestId = AtomicInteger(0)
-    private val ipcMutex = Mutex()
-    private var readBuffer = ByteArray(0)
     private var isWorkletStarted = false
     private val closed = AtomicBoolean(false)
 
-    // IPC must be created and used on a thread with an Android Looper
     private var ipcThread: HandlerThread? = null
     private var ipcHandler: Handler? = null
 
-    // Queue for incoming IPC data chunks
+    // ID-based multiplexing: each in-flight request has a CompletableDeferred keyed by its JSON-RPC id.
+    // The reader coroutine resolves the correct deferred when a response arrives.
+    private val pendingRequests = ConcurrentHashMap<Int, CompletableDeferred<JSONObject>>()
+
+    private var readerJob: Job? = null
+    private val readerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Only protects IPC writes — reads are dispatched by the single reader coroutine
+    private val writeMutex = Mutex()
+
     private val incomingData = LinkedBlockingQueue<ByteArray>()
 
     private suspend fun ensureWorkletStarted() {
         if (isWorkletStarted) return
 
-        // Start the HandlerThread for IPC
         val thread = HandlerThread("WdkIPC").apply { start() }
         ipcThread = thread
         ipcHandler = Handler(thread.looper)
@@ -49,14 +63,11 @@ class WdkCore(private val context: Context) : Closeable {
             worklet.start("/wdk.bundle", inputStream, null)
         }
 
-        // Give worklet time to initialize
         delay(500)
 
-        // Create IPC on the HandlerThread which has an ALooper
         val latch = CountDownLatch(1)
         ipcHandler!!.post {
             ipc = IPC(worklet)
-            // Start continuous reading via callbacks
             startReading()
             latch.countDown()
         }
@@ -65,8 +76,13 @@ class WdkCore(private val context: Context) : Closeable {
         }
 
         isWorkletStarted = true
+        startReaderLoop()
     }
 
+    /**
+     * ALooper-based continuous reading that feeds raw chunks into [incomingData].
+     * Must be called on the IPC handler thread.
+     */
     private fun startReading() {
         if (closed.get()) return
         val ipc = this.ipc ?: return
@@ -75,13 +91,74 @@ class WdkCore(private val context: Context) : Closeable {
                 val bytes = ByteArray(data.remaining())
                 data.get(bytes)
                 incomingData.put(bytes)
-                // Continue reading
                 startReading()
             }
         }
     }
 
-    // -- Framing methods --
+    // -- Reader loop (single coroutine that owns all read-side state) --
+
+    private fun startReaderLoop() {
+        readerJob = readerScope.launch {
+            var readBuffer = ByteArray(0)
+            try {
+                while (isActive && !closed.get()) {
+                    readBuffer = accumulate(readBuffer, 4)
+
+                    val length = ByteBuffer.wrap(readBuffer, 0, 4)
+                        .order(ByteOrder.BIG_ENDIAN).int
+
+                    if (length !in 1..9_999_999) break
+
+                    val frameEnd = 4 + length
+                    readBuffer = accumulate(readBuffer, frameEnd)
+
+                    val messageBytes = readBuffer.copyOfRange(4, frameEnd)
+                    readBuffer = readBuffer.copyOfRange(frameEnd, readBuffer.size)
+
+                    try {
+                        val response = JSONObject(String(messageBytes, Charsets.UTF_8))
+                        val id = response.optInt("id", -1)
+                        if (id > 0) {
+                            pendingRequests.remove(id)?.complete(response)
+                        }
+                    } catch (_: Exception) { }
+                }
+            } catch (_: CancellationException) {
+            } finally {
+                rejectAllPending()
+            }
+        }
+    }
+
+    /** Block until [readBuffer] has at least [needed] bytes, polling [incomingData]. */
+    private suspend fun accumulate(buffer: ByteArray, needed: Int): ByteArray {
+        var buf = buffer
+        while (buf.size < needed) {
+            if (closed.get()) throw CancellationException("closed")
+            val chunk = withContext(Dispatchers.IO) {
+                var data: ByteArray? = null
+                while (data == null && !closed.get()) {
+                    data = incomingData.poll(100, TimeUnit.MILLISECONDS)
+                }
+                data ?: throw CancellationException("closed")
+            }
+            buf += chunk
+        }
+        return buf
+    }
+
+    private fun rejectAllPending() {
+        val error = WdkError.IpcError("Connection closed")
+        val iter = pendingRequests.entries.iterator()
+        while (iter.hasNext()) {
+            val entry = iter.next()
+            iter.remove()
+            entry.value.completeExceptionally(error)
+        }
+    }
+
+    // -- Framing: write --
 
     private suspend fun writeFramed(data: ByteArray) {
         val ipc = this.ipc ?: throw WdkError.IpcError("IPC not initialized")
@@ -93,51 +170,19 @@ class WdkCore(private val context: Context) : Closeable {
             .put(data)
         frame.flip()
 
-        val latch = CountDownLatch(1)
-        handler.post {
-            ipc.write(frame)
-            latch.countDown()
-        }
-        withContext(Dispatchers.IO) {
-            latch.await()
-        }
-    }
-
-    private suspend fun readFramed(): ByteArray {
-        // Read 4-byte length header
-        val lengthData = readExactly(4)
-        val length = ByteBuffer.wrap(lengthData)
-            .order(ByteOrder.BIG_ENDIAN)
-            .int
-
-        // Validate message size (max 10MB)
-        if (length !in 1..9_999_999) {
-            throw WdkError.IpcError("Invalid message length: $length")
-        }
-
-        return readExactly(length)
-    }
-
-    private suspend fun readExactly(bytes: Int): ByteArray {
-        while (readBuffer.size < bytes) {
-            if (closed.get()) throw WdkError.IpcError("Connection closed")
-            val chunk = withContext(Dispatchers.IO) {
-                // Poll with timeout so we can check the closed flag
-                var data: ByteArray? = null
-                while (data == null && !closed.get()) {
-                    data = incomingData.poll(100, TimeUnit.MILLISECONDS)
-                }
-                data ?: throw WdkError.IpcError("Connection closed while reading")
+        writeMutex.withLock {
+            val latch = CountDownLatch(1)
+            handler.post {
+                ipc.write(frame)
+                latch.countDown()
             }
-            readBuffer += chunk
+            withContext(Dispatchers.IO) {
+                latch.await()
+            }
         }
-
-        val result = readBuffer.copyOfRange(0, bytes)
-        readBuffer = readBuffer.copyOfRange(bytes, readBuffer.size)
-        return result
     }
 
-    // -- JSON-RPC --
+    // -- JSON-RPC with ID-based multiplexing --
 
     @Suppress("SpellCheckingInspection")
     private suspend fun call(method: String, params: JSONObject): JSONObject {
@@ -154,30 +199,33 @@ class WdkCore(private val context: Context) : Closeable {
 
         val requestData = request.toString().toByteArray(Charsets.UTF_8)
 
-        ipcMutex.withLock {
+        val deferred = CompletableDeferred<JSONObject>()
+        pendingRequests[id] = deferred
+
+        try {
             writeFramed(requestData)
-            val responseData = readFramed()
-
-            val responseStr = String(responseData, Charsets.UTF_8)
-            val response = JSONObject(responseStr)
-
-            if (response.has("error")) {
-                val error = response.getJSONObject("error")
-                val errorMessage = error.optString("message", "Unknown error")
-                val errorCode = error.optString("code", "UNKNOWN")
-                throw WdkError.RpcError(code = errorCode, message = errorMessage)
-            }
-
-            if (!response.has("result")) {
-                throw WdkError.InvalidResponse("Missing result in response")
-            }
-
-            return response.getJSONObject("result")
+        } catch (e: Exception) {
+            pendingRequests.remove(id)
+            throw e
         }
+
+        val response = deferred.await()
+
+        if (response.has("error")) {
+            val error = response.getJSONObject("error")
+            val errorMessage = error.optString("message", "Unknown error")
+            val errorCode = error.optString("code", "UNKNOWN")
+            throw WdkError.RpcError(code = errorCode, message = errorMessage)
+        }
+
+        if (!response.has("result")) {
+            throw WdkError.InvalidResponse("Missing result in response")
+        }
+
+        return response.getJSONObject("result")
     }
 
     // -- Public API --
-    // Functions are suppressed for 'unused' because they are the public API for the library consumer.
 
     @Suppress("unused")
     suspend fun workletStart() {
@@ -308,32 +356,68 @@ class WdkCore(private val context: Context) : Closeable {
     }
 
     // -- Lifecycle --
+    //
+    // Teardown order:
+    //   1. Stop the ALooper readable poll  (no more read callbacks)
+    //   2. Cancel reader coroutine & reject all pending deferreds
+    //   3. Quit handler thread             (ALooper exits)
+    //   4. ipc.close()                     (bare_ipc_destroy — close dup'd FDs)
+    //   worklet.terminate() is intentionally skipped (see note in close())
 
     override fun close() {
         if (closed.getAndSet(true)) return
 
+        val handler = ipcHandler
+        val localIpc = ipc
         ipcHandler = null
 
-        ipc?.close()
-        ipc = null
+        // 1. Unregister ALooper readable poll on the handler thread
+        if (handler != null && localIpc != null) {
+            try {
+                val latch = CountDownLatch(1)
+                handler.post {
+                    try { localIpc.readable(null) } catch (_: Exception) {}
+                    latch.countDown()
+                }
+                latch.await(1, TimeUnit.SECONDS)
+            } catch (_: Exception) {}
+        }
 
+        // 2. Cancel reader & reject pending
+        readerJob?.cancel()
+        readerScope.cancel()
+        rejectAllPending()
+        incomingData.clear()
+
+        // 3. Stop handler thread (quits the ALooper, prevents further native callbacks)
         val thread = ipcThread
         ipcThread = null
         thread?.quitSafely()
-        thread?.join()
+        thread?.join(2000)
 
+        // 4. Destroy IPC (closes dup'd file descriptors)
+        try { localIpc?.close() } catch (_: Exception) {}
+        ipc = null
+
+        // NOTE: worklet.terminate() is intentionally omitted.
+        // bare_worklet_terminate -> bare_terminate triggers V8 teardown which unloads native
+        // addon modules. Those modules may have registered pthread_key destructors that become
+        // dangling function pointers, causing SIGSEGV in pthread_key_clean_all when any thread
+        // exits afterward. The worklet thread sits idle on uv_sem_wait and is cleaned up on
+        // process exit. This matches the Swift behaviour where terminate() only runs in deinit
+        // (process teardown). See crash trace: pthread_key_clean_all -> <unmapped code>.
         isWorkletStarted = false
-        readBuffer = ByteArray(0)
-        incomingData.clear()
     }
 
     @Suppress("unused")
     fun suspend() {
+        if (closed.get()) return
         worklet.suspend()
     }
 
     @Suppress("unused")
     fun resume() {
+        if (closed.get()) return
         worklet.resume()
     }
 }
