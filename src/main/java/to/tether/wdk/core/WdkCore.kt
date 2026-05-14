@@ -362,7 +362,10 @@ class WdkCore(private val context: Context) : Closeable {
     //   2. Cancel reader coroutine & reject all pending deferreds
     //   3. Quit handler thread             (ALooper exits)
     //   4. ipc.close()                     (bare_ipc_destroy — close dup'd FDs)
-    //   worklet.terminate() is intentionally skipped (see note in close())
+    //   5. worklet.terminate()             (V8 teardown — safe with bare-crypto >= 1.13.7
+    //                                       and bare-tls >= 3.1.4 which pin themselves via
+    //                                       RTLD_NODELETE so pthread_key destructors stay
+    //                                       valid even after V8 unloads its module refs)
 
     override fun close() {
         if (closed.getAndSet(true)) return
@@ -399,13 +402,9 @@ class WdkCore(private val context: Context) : Closeable {
         try { localIpc?.close() } catch (_: Exception) {}
         ipc = null
 
-        // NOTE: worklet.terminate() is intentionally omitted.
-        // bare_worklet_terminate -> bare_terminate triggers V8 teardown which unloads native
-        // addon modules. Those modules may have registered pthread_key destructors that become
-        // dangling function pointers, causing SIGSEGV in pthread_key_clean_all when any thread
-        // exits afterward. The worklet thread sits idle on uv_sem_wait and is cleaned up on
-        // process exit. This matches the Swift behaviour where terminate() only runs in deinit
-        // (process teardown). See crash trace: pthread_key_clean_all -> <unmapped code>.
+        if (isWorkletStarted) {
+            try { worklet.terminate() } catch (_: Exception) {}
+        }
         isWorkletStarted = false
     }
 
