@@ -350,9 +350,20 @@ class WdkCore(private val context: Context) : Closeable {
         })
     }
 
+    /**
+     * Disposes and unregisters wallets, erasing sensitive data from memory.
+     *
+     * @param blockchains The blockchains to dispose. When null (the default), every registered
+     *   wallet is disposed and the underlying WDK instance is torn down. When a list is supplied,
+     *   only those wallets are unregistered.
+     */
     @Suppress("unused")
-    suspend fun dispose() {
-        call("dispose", JSONObject())
+    suspend fun dispose(blockchains: List<String>? = null) {
+        call("dispose", JSONObject().apply {
+            if (blockchains != null) {
+                put("blockchains", org.json.JSONArray(blockchains))
+            }
+        })
     }
 
     // -- Lifecycle --

@@ -269,6 +269,8 @@ class WdkCoreTest {
 
     @Test
     fun test14_registerWallet_bitcoinMatchingConfig() = runBlocking {
+        wdkCore.dispose(listOf("bitcoin"))
+
         val config = """
             {
                 "bitcoin": {
@@ -317,5 +319,50 @@ class WdkCoreTest {
     @Test
     fun test17_dispose() = runBlocking {
         wdkCore.dispose()
+    }
+
+    @Test
+    fun test18_disposeAll_clearsEntireWdk() = runBlocking {
+        // Bring up a fresh WDK with a registered wallet.
+        val entropy = wdkCore.generateEntropyAndEncrypt(wordCount = 12)
+        wdkCore.initializeWDK(
+            encryptionKey = entropy.encryptionKey,
+            encryptedSeed = entropy.encryptedSeedBuffer,
+            config = """
+                {
+                    "networks": {
+                        "ethereum": {
+                            "blockchain": "ethereum",
+                            "config": { "rpcUrl": "https://eth.example.com" }
+                        }
+                    }
+                }
+            """.trimIndent()
+        )
+
+        // dispose() with no arguments must tear down the whole WDK instance,
+        // not just individual wallets.
+        wdkCore.dispose()
+
+        // With the WDK fully disposed, any operation that needs an initialized
+        // instance must fail until initializeWDK is called again.
+        val config = """
+            {
+                "polygon": {
+                    "blockchain": "polygon",
+                    "config": { "rpcUrl": "https://polygon.example.com" }
+                }
+            }
+        """.trimIndent()
+
+        try {
+            wdkCore.registerWallet(config)
+            fail("Expected WdkError.RpcError because the WDK was fully disposed")
+        } catch (e: WdkError.RpcError) {
+            assertTrue(
+                "Error should mention WDK not initialized, got: ${e.message}",
+                e.message.contains("not initialized")
+            )
+        }
     }
 }
