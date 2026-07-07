@@ -2,7 +2,7 @@
   "name": "wdk-kotlin-core-worklet",
   "private": true,
   "dependencies": {
-    "@tetherto/pear-wrk-wdk": "github:claudiovb/pear-wrk-wdk#jsonrpc",
+    "@tetherto/pear-wrk-wdk": "github:claudiovb/pear-wrk-wdk#main",
     "@tetherto/wdk": "^1.0.0-beta.9",
     "@tetherto/wdk-wallet-btc": "github:claudiovb/wdk-wallet-btc#chore/update-deps",
     "@tetherto/wdk-wallet-evm": "^1.0.0-beta.4",
