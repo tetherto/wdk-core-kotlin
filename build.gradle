@@ -1,0 +1,82 @@
+plugins {
+    id 'com.android.library' version '8.2.2'
+    id 'org.jetbrains.kotlin.android' version '1.9.22'
+}
+
+android {
+    namespace 'to.tether.wdk.core'
+    compileSdk 35
+
+    defaultConfig {
+        minSdk 33
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs += ["src/main/addons", "libs/bare-kit/jni"]
+            assets.srcDirs += "src/main/assets"
+            java.srcDirs = ['src/main/java']
+            res.srcDirs = ['src/main/res']
+            manifest.srcFile 'src/main/AndroidManifest.xml'
+        }
+    }
+}
+
+// --- Bundler-based build tasks ---
+// Resolve npm via login shell so nvm-managed Node is on PATH
+
+tasks.register("npmInstall", Exec) {
+    workingDir "js"
+    commandLine "bash", "-lc", "npm install"
+    onlyIf { !file("js/node_modules").exists() }
+}
+
+tasks.register("generateBundle", Exec) {
+    workingDir "js"
+    commandLine "bash", "-lc", "npm run generate"
+    dependsOn npmInstall
+}
+
+tasks.register("copyAddons", Copy) {
+    from "js/android-addons"
+    into "src/main/addons"
+    dependsOn generateBundle
+}
+
+tasks.register("copyBundle", Copy) {
+    from "js/.wdk-bundle/wdk-worklet.bundle"
+    into "src/main/assets"
+    rename { "wdk.bundle" }
+    dependsOn generateBundle
+}
+
+preBuild.dependsOn copyAddons, copyBundle
+
+dependencies {
+    if (file('libs/bare-kit/classes.jar').exists()) {
+        api files('libs/bare-kit/classes.jar')
+    }
+
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.7.0'
+    androidTestImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3'
+}
