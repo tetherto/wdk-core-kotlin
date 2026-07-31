@@ -27,6 +27,6 @@ module.exports = {
     linkAddons: true,
     platforms: ['android'],
     targets: ['android-arm64', 'android-arm', 'android-ia32', 'android-x64'],
-    convertEsmToCjs: false
+    convertEsmToCjs: true
   }
 }

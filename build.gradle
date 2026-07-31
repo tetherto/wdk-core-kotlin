@@ -40,6 +40,9 @@ android {
 
 // --- Bundler-based build tasks ---
 // Resolve npm via login shell so nvm-managed Node is on PATH
+// Regenerates js/.wdk-bundle and re-copies addons + wdk.bundle on every build.
+// The ESM->CJS conversion (options.convertEsmToCjs in js/wdk.config.js) makes the
+// bundle CJS so it runs on V8, QuickJS and JSC. See js/README.md.
 
 tasks.register("npmInstall", Exec) {
     workingDir "js"

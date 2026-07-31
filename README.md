@@ -87,7 +87,7 @@ This produces:
 
 The `preBuild` Gradle task copies these into `src/main/assets/wdk.bundle` and `src/main/addons/` respectively, so a normal `./gradlew assemble` will produce a working AAR.
 
-To customize networks or wallet packages, edit `js/wdk.config.js` before running `npm run generate`.
+To customize networks or wallet packages, edit `js/wdk.config.js` before running `npm run generate`. **See [`js/README.md`](js/README.md)** for a full walkthrough of the bundle-creation/installation flow, what `wdk.config.js` controls, and how `pear-wrk-wdk` and `wdk-worklet-bundler` fit together.
 
 ## Quick Start
 
@@ -223,12 +223,13 @@ module.exports = {
     linkAddons: true,
     platforms: ['android'],
     targets: ['android-arm64', 'android-arm', 'android-ia32', 'android-x64'],
-    convertEsmToCjs: false
+    convertEsmToCjs: true // keep true: QuickJS (and iOS JSC) only run CJS, not ESM
   }
 }
 ```
 
-Then rerun `npm run generate` and rebuild the AAR.
+Then rerun `npm run generate` and rebuild the AAR. For a field-by-field explanation
+(especially `convertEsmToCjs` and the engine differences), see [`js/README.md`](js/README.md).
 
 ## Architecture
 
