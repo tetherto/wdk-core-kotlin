@@ -91,15 +91,13 @@ Different JS engines support different module systems:
 
 | Engine | Used by | ESM? | CJS? |
 | ------ | ------- | ---- | ---- |
-| V8     | old Android BareKit build | ✅ | ✅ |
-| QuickJS | current Android BareKit build (`libbare-kit.so`) | ❌ | ✅ |
+| V8     | Heavier with JIT BareKit build - faster runtime on potent hardware | ✅ | ✅ |
+| QuickJS | current Android BareKit build recommended for this repo (`libbare-kit.so`) - 60 MB less | ❌ | ✅ |
 | JSC    | iOS / macOS | ❌ | ✅ |
 
 CJS runs on **all three**; raw ESM only runs on V8. `convertEsmToCjs: true` makes the
 bundler run esbuild over the bundle's `.js`/`.mjs`/`.cjs` files and emit CJS, so the same
 bundle works on QuickJS, JSC and V8 alike. Leave it `true`.
 
-The bundler defaults this to `true` whenever `transport: 'jsonrpc'`, so you may also delete
-the line and inherit the default. Only set it to `false` if you *knowingly* ship a
-V8-only build and want to keep raw ESM — which is not the case for the QuickJS Android
+Only set it to `false` if you *knowingly* ship a V8-only build and want to keep raw ESM — which is not the case for the QuickJS Android
 runtime this repo currently uses.
