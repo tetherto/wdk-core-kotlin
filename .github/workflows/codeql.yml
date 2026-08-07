@@ -1,0 +1,131 @@
+name: "CodeQL"
+
+# --------------------------------------------------------------------------------------
+# ADVANCED setup (committed workflow) — replaces GitHub "default setup".
+#
+# Why this exists: default setup analyzed the java-kotlin database with build-mode "none".
+# "none" is buildless and supports Java but NOT Kotlin ("Kotlin analysis requires a build",
+# per GitHub docs). This repo is 100% Kotlin, so under "none" the extractor found .kt code
+# it could not process and, with no Java to fall back on, `codeql database finalize` crashed
+# with "could not process any of it using the 'none' build mode / no source code seen" —
+# i.e. the Kotlin library code was never scanned. This workflow analyzes Kotlin with
+# build-mode "manual" (a real compile), so the extractor actually runs.
+#
+# ⚠️ REQUIRED ADMIN STEP: GitHub "default setup" must be switched OFF for this repo
+#    (Settings → Code security → CodeQL analysis → Advanced). While default setup is
+#    enabled, this workflow's results upload conflicts with it. That toggle needs repo
+#    admin — see the tracking issue.
+#
+# No repository secrets are required: BareKit is fetched from its PUBLIC GitHub release
+# using the workflow's built-in GITHUB_TOKEN.
+# --------------------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: "23 4 * * 1"   # weekly, Monday 04:23 UTC
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript   # the js/ worklet source; buildless
+            build-mode: none
+          - language: java-kotlin              # the Kotlin library; needs a real compile
+            build-mode: manual
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- Kotlin build prerequisites (java-kotlin matrix leg only) ----------
+      - name: Set up JDK 17
+        if: matrix.language == 'java-kotlin'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        if: matrix.language == 'java-kotlin'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform / build-tools
+        if: matrix.language == 'java-kotlin'
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      # BareKit ships as a single PUBLIC release asset (prebuilds.zip, all platforms).
+      # To COMPILE the Kotlin we only need its classes.jar so that the imports
+      # `to.holepunch.bare.kit.{IPC,Worklet}` in WdkCore.kt resolve — the native .so
+      # libraries are runtime-only and are not needed for compilation/extraction.
+      # We always use the LATEST release (not a pinned tag).
+      - name: Resolve latest BareKit release
+        if: matrix.language == 'java-kotlin'
+        id: barekit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --repo holepunchto/bare-kit --json tagName --jq .tagName)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest BareKit release: $TAG"
+
+      # Cache the tiny extracted classes.jar keyed on the release tag, so the ~370MB
+      # prebuilds.zip is downloaded only when BareKit publishes a new release.
+      - name: Cache BareKit classes.jar
+        if: matrix.language == 'java-kotlin'
+        id: barekit-cache
+        uses: actions/cache@v4
+        with:
+          path: libs/bare-kit
+          key: barekit-classesjar-${{ steps.barekit.outputs.tag }}
+
+      - name: Fetch BareKit classes.jar
+        if: matrix.language == 'java-kotlin' && steps.barekit-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.barekit.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # prebuilds.zip is one monolithic ~370MB asset (every platform). We download it
+          # once per release tag and extract only android/bare-kit/classes.jar; the result
+          # is cached (previous step) so this rarely re-runs.
+          gh release download "$TAG" --repo holepunchto/bare-kit \
+            --pattern prebuilds.zip --output prebuilds.zip
+          mkdir -p libs/bare-kit
+          unzip -o -j prebuilds.zip "android/bare-kit/classes.jar" -d libs/bare-kit
+          rm -f prebuilds.zip
+          test -f libs/bare-kit/classes.jar
+
+      # ---------- CodeQL ----------
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      # Manual build: compile ONLY the Kotlin so CodeQL's Kotlin extractor observes the
+      # compiler. --no-daemon keeps the compile in a fresh JVM the CodeQL tracer can
+      # instrument. We skip the JS worklet-bundle tasks — they pull from the private
+      # @tetherto npm registry (would need a secret) and are irrelevant to Kotlin analysis.
+      - name: Build Kotlin (manual)
+        if: matrix.language == 'java-kotlin'
+        run: |
+          ./gradlew --no-daemon compileDebugKotlin \
+            -x npmInstall -x generateBundle -x copyAddons -x copyBundle
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
