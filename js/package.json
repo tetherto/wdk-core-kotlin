@@ -10,7 +10,7 @@
     "@tetherto/wdk-wallet-solana": "^1.0.0-beta.3"
   },
   "devDependencies": {
-    "@tetherto/wdk-worklet-bundler": "github:claudiovb/wdk-worklet-bundler#fix/esmcjs"
+    "@tetherto/wdk-worklet-bundler": "github:tetherto/wdk-worklet-bundler#main"
   },
   "scripts": {
     "generate": "wdk-worklet-bundler generate --install --verbose",
