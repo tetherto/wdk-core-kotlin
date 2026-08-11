@@ -39,23 +39,35 @@ android {
 }
 
 // --- Bundler-based build tasks ---
-// Resolve npm via login shell so nvm-managed Node is on PATH
-// Regenerates js/.wdk-bundle and re-copies addons + wdk.bundle on every build.
-// The ESM->CJS conversion (options.convertEsmToCjs in js/wdk.config.js) makes the
-// bundle CJS so it runs on V8, QuickJS and JSC. See js/README.md.
+// These re-run only when the JS side actually changes. Instead of guessing with
+// onlyIf, we declare each task's inputs/outputs and let Gradle's own up-to-date
+// check drive it: a task is skipped when its inputs+outputs are unchanged and
+// re-run when they change. So editing only Kotlin skips the whole JS pipeline,
+// while editing js/wdk.config.js (or js/package.json) triggers a regenerate and
+// the Copy tasks recopy the fresh output. (`bash -lc` runs a login shell so the
+// nvm-managed Node is on PATH.) The ESM->CJS conversion (options.convertEsmToCjs
+// in js/wdk.config.js) makes the bundle CJS so it runs on V8, QuickJS and JSC.
+// See js/README.md.
 
 tasks.register("npmInstall", Exec) {
     workingDir "js"
     commandLine "bash", "-lc", "npm install"
-    onlyIf { !file("js/node_modules").exists() }
+    inputs.file("js/package.json")
+    outputs.dir("js/node_modules")
 }
 
 tasks.register("generateBundle", Exec) {
     workingDir "js"
     commandLine "bash", "-lc", "npm run generate"
     dependsOn npmInstall
+    inputs.file("js/wdk.config.js")
+    inputs.file("js/package.json")
+    outputs.dir("js/.wdk-bundle")
+    outputs.dir("js/android-addons")
 }
 
+// Copy tasks are incremental on their own: they recopy exactly when generateBundle
+// produces new output and are skipped otherwise.
 tasks.register("copyAddons", Copy) {
     from "js/android-addons"
     into "src/main/addons"
