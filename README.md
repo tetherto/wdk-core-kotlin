@@ -51,7 +51,7 @@ Override with Gradle properties:
 
 | Property | Default | Effect |
 | -------- | ------- | ------ |
-| `-PbareKitEngine=<engine>` | `v8` | Which JS-engine build to fetch. `v8` uses the archive's `android/` dir; any other value uses `android-<engine>/` (e.g. a future `quickjs`). If the archive has no such dir the build fails listing what's available. QuickJS isn't published yet — see [`js/README.md`](js/README.md). |
+| `-PbareKitEngine=<engine>` | `v8` | Which JS-engine build to fetch. `v8` uses the archive's `android/` dir; any other value uses `android-<engine>/` (e.g. a future `quickjs`). If the archive has no such dir the build fails listing what's available. See [`js/README.md`](js/README.md) for engine trade-offs. |
 | `-PbareKitTag=<tag>` | latest | Pin a specific BareKit release instead of the latest. |
 | `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped, or your own local BareKit build) instead of downloading. |
 
@@ -84,24 +84,34 @@ libs/bare-kit/
 
 `build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files('libs/bare-kit/classes.jar') { builtBy 'fetchBareKit' }` (the compile classpath), so the fetch runs before compilation automatically.
 
-### Step 3: Build the WDK Worklet Bundle
+### Step 3: Build
 
-The JavaScript worklet that runs inside BareKit is generated from `js/`, and **the Gradle build does this for you**: the `generateBundle` task runs `npm run generate` and — via Gradle's up-to-date checking — re-runs only when `js/wdk.config.js` or `js/package.json` change, then copies the result into `src/main/assets/wdk.bundle` and `src/main/addons/`. So a plain `./gradlew assemble` produces a working AAR with no manual JS steps; editing only Kotlin skips the whole JS pipeline.
+That's it — build the library and the JS worklet bundle is generated and packaged for you:
 
-To generate manually (e.g. to iterate on the JS alone):
+```bash
+./gradlew assemble
+```
+
+The build runs the JS bundler automatically (`generateBundle` → `npm run generate`) and
+copies the result into the AAR. Gradle's up-to-date checking keeps it cheap:
+
+- Edit `js/wdk.config.js` (networks/wallet packages) → the next build regenerates the bundle.
+- Edit only Kotlin → the whole JS pipeline is skipped.
+
+<details>
+<summary>Iterating on the JS by hand (optional)</summary>
+
+You rarely need this, but to build the bundle yourself:
 
 ```bash
 cd js
 npm install
-npm run generate
+npm run generate   # → js/.wdk-bundle/wdk-worklet.bundle + js/android-addons/
 ```
+</details>
 
-This produces:
-
-- `js/.wdk-bundle/wdk-worklet.bundle` (the worklet bytecode)
-- `js/android-addons/` (native addon `.so` files for each ABI)
-
-To customize networks or wallet packages, edit `js/wdk.config.js` before running `npm run generate`. **See [`js/README.md`](js/README.md)** for a full walkthrough of the bundle-creation/installation flow, what `wdk.config.js` controls, and how `pear-wrk-wdk` and `wdk-worklet-bundler` fit together.
+To customize networks or wallet packages, edit `js/wdk.config.js` — **see [`js/README.md`](js/README.md)**
+for the full walkthrough and how `pear-wrk-wdk` and `wdk-worklet-bundler` fit together.
 
 ## Quick Start
 
