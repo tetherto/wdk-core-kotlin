@@ -1,7 +1,7 @@
 # WDK Worklet Bundle (`js/`)
 
 This folder holds the JavaScript source and configuration for the **WDK worklet** -
-the JS program that runs inside BareKit on the device - its bundled through `wdk-worklet-bundler`. 
+the JS program that runs inside BareKit on the device - it's bundled through `wdk-worklet-bundler`. 
 `npm run generate` compiles everything here into a single binary bundle (`.wdk-bundle/wdk-worklet.bundle`) plus
 the native addons due to the addons config in `wdk.config.js`, which the Android build then copies into the library (see
 [build.gradle](../build.gradle)).
@@ -85,7 +85,7 @@ Different JS engines support different module systems:
 | Engine | Used by | ESM? | CJS? |
 | ------ | ------- | ---- | ---- |
 | V8     | Heavier with JIT BareKit build - faster runtime on potent hardware | ✅ | ✅ |
-| QuickJS | current Android BareKit build recommended for this repo (`libbare-kit.so`) - 60 MB less | ❌ | ✅ |
+| QuickJS | recommended Android target for this repo (`libbare-kit.so`, ~60 MB smaller than V8) | ❌ | ✅ |
 | JSC    | iOS / macOS | ❌ | ✅ |
 
 CJS runs on **all three**; raw ESM only runs on V8 with BareKit. `convertEsmToCjs: true` makes the
@@ -93,3 +93,12 @@ bundler run esbuild over the bundle's `.js`/`.mjs`/`.cjs` files and emit CJS, so
 bundle works on QuickJS, JSC and V8 alike. Leave it `true`.
 
 Only set it to `false` if you *knowingly* ship a V8-only build and want to keep raw ESM.
+
+### Which engine you actually get
+
+`build.gradle`'s `fetchBareKit` task pulls the engine build from BareKit's public
+releases. Pick the engine with `-PbareKitEngine`: **V8** (`-PbareKitEngine=v8`, the
+default) or **QuickJS** (`-PbareKitEngine=quickjs`, the recommended Android target —
+`libbare-kit.so` is ~60 MB smaller per ABI, no JIT). Either way the bundle above is
+the *same* CJS bundle (`convertEsmToCjs: true`), so it runs unchanged on V8, QuickJS
+or JSC.
