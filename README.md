@@ -2,11 +2,9 @@
 
 An Android library for the [Tether WDK](https://github.com/Tetherto/wdk) (Wallet Development Kit). Provides a clean coroutine-based Kotlin API for wallet operations, key management, and multi-chain interactions on Android.
 
-Supported networks: Ethereum, Polygon, Arbitrum, Sepolia, Solana, Bitcoin, and ERC-4337.
+Supported networks: check wdk-wallet-* [implementations](https://docs.wdk.tether.io/sdk/wallet-modules/#wallet-modules), default is the ones currently set on wdk.config.js but you can customise to any chain you need.
 
 ## Integration Guide
-
-> Note: this repository does not yet ship a published JSON-RPC worklet release (the Android equivalent of the Swift package's `prebuilds.zip` / `addons.zip`). Until that is available, integration is done by building the library locally. The steps below cover both paths.
 
 ### Step 1: Add the Library
 
@@ -42,12 +40,27 @@ dependencies {
     implementation(project(":wdk-core-kotlin"))
 }
 ```
+> Note: See build.gradle from wdk-starter-kotlin for a [reference](https://github.com/Tetherto/wdk-starter-kotlin)
+### Step 2: BareKit Android Runtime (fetched automatically)
 
-### Step 2: Provide the BareKit Android Runtime
+The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the latest [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) release and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release.
 
-The library depends on Holepunch's BareKit Android runtime (a `classes.jar` plus per-ABI `.so` libraries). These are **not committed** to this repository because of their size (~230 MB).
+It's a **one-time, on-demand** fetch: it runs only when `libs/bare-kit/classes.jar` is missing, and **never during an Android Studio Gradle _sync_** (only during an actual build). So on a fresh clone the `to.holepunch.bare.kit.*` imports show unresolved until your first `./gradlew` build populates them — run one build (or Build ▸ Make if on Android Studio) and they resolve for good.
 
-Place the BareKit AAR contents under `libs/bare-kit/` in this layout:
+Override with Gradle properties:
+
+| Property | Default | Effect |
+| -------- | ------- | ------ |
+| `-PbareKitEngine=<engine>` | `v8` | Which JS-engine build to fetch. `v8` uses the archive's `android/` dir; any other value uses `android-<engine>/` (e.g. a future `quickjs`). If the archive has no such dir the build fails listing what's available. See [`js/README.md`](js/README.md) for engine trade-offs. |
+| `-PbareKitTag=<tag>` | latest | Pin a specific BareKit release instead of the latest. |
+| `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped, or your own local BareKit build) instead of downloading. |
+
+To force a re-fetch — e.g. after changing `-PbareKitTag`/`-PbareKitEngine` — delete `libs/bare-kit/`.
+
+<details>
+<summary>Manual placement (offline / local build)</summary>
+
+If you'd rather supply it yourself, drop the BareKit Android files under `libs/bare-kit/` (or wherever `-PbareKitDir` points) in this layout; `fetchBareKit` then finds the `classes.jar` and skips:
 
 ```
 libs/bare-kit/
@@ -67,27 +80,38 @@ libs/bare-kit/
         ├── libbare-kit.so
         └── libc++_shared.so
 ```
+</details>
 
-`build.gradle` wires these in automatically via `jniLibs.srcDirs` and a conditional `api files('libs/bare-kit/classes.jar')`.
+`build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files('libs/bare-kit/classes.jar') { builtBy 'fetchBareKit' }` (the compile classpath), so the fetch runs before compilation automatically.
 
-### Step 3: Build the WDK Worklet Bundle
+### Step 3: Build
 
-The JavaScript worklet that runs inside BareKit is generated from `js/`:
+That's it — build the library and the JS worklet bundle is generated and packaged for you:
+
+```bash
+./gradlew assemble
+```
+
+The build runs the JS bundler automatically (`generateBundle` → `npm run generate`) and
+copies the result into the AAR. Gradle's up-to-date checking keeps it cheap:
+
+- Edit `js/wdk.config.js` (networks/wallet packages) → the next build regenerates the bundle.
+- Edit only Kotlin → the whole JS pipeline is skipped.
+
+<details>
+<summary>Iterating on the JS by hand (optional)</summary>
+
+You rarely need this, but to build the bundle yourself:
 
 ```bash
 cd js
 npm install
-npm run generate
+npm run generate   # → js/.wdk-bundle/wdk-worklet.bundle + js/android-addons/
 ```
+</details>
 
-This produces:
-
-- `js/.wdk-bundle/wdk-worklet.bundle` (the worklet bytecode)
-- `js/android-addons/` (native addon `.so` files for each ABI)
-
-The `preBuild` Gradle task copies these into `src/main/assets/wdk.bundle` and `src/main/addons/` respectively, so a normal `./gradlew assemble` will produce a working AAR.
-
-To customize networks or wallet packages, edit `js/wdk.config.js` before running `npm run generate`.
+To customize networks or wallet packages, edit `js/wdk.config.js` — **see [`js/README.md`](js/README.md)**
+for the full walkthrough and how `pear-wrk-wdk` and `wdk-worklet-bundler` fit together.
 
 ## Quick Start
 
@@ -185,7 +209,7 @@ val wdk = WdkCore(context)
 
 ## Error Handling
 
-All suspend methods throw `WdkError`, a sealed class with three cases:
+Every suspending (coroutine) method can throw `WdkError` on failure — a sealed class with three cases. (This is unrelated to the `suspend()` lifecycle method above, which just pauses the worklet and does not throw.)
 
 ```kotlin
 sealed class WdkError(message: String) : Exception(message) {
@@ -223,12 +247,12 @@ module.exports = {
     linkAddons: true,
     platforms: ['android'],
     targets: ['android-arm64', 'android-arm', 'android-ia32', 'android-x64'],
-    convertEsmToCjs: false
+    convertEsmToCjs: true // keep true: QuickJS (and iOS JSC) only run CJS, not ESM
   }
 }
 ```
 
-Then rerun `npm run generate` and rebuild the AAR.
+Then rerun `npm run generate` and rebuild the AAR. For a field-by-field explanation (especially `convertEsmToCjs` and the engine differences), see [`js/README.md`](js/README.md).
 
 ## Architecture
 
