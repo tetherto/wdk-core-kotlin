@@ -275,7 +275,7 @@ Your App
 
 ## Requirements
 
-- Android `minSdk` 33, `compileSdk` 35
+- Android `minSdk` 31, `compileSdk` 35
 - Kotlin 1.9.22+ with coroutines
 - JDK 17
 - Node.js (for building the worklet bundle)
