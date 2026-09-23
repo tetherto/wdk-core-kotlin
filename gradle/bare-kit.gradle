@@ -1,0 +1,244 @@
+// BareKit provisioning for wdk-core-kotlin — applied from build.gradle.
+//
+// WdkCore.kt compiles against to.holepunch.bare.kit.* (classes.jar) and packages BareKit's
+// per-ABI native engine (jni/) at runtime. Both live in bareKitDir (default libs/bare-kit),
+// which is simply BareKit's unpacked Android AAR, and are provisioned by fetchBareKit in tiers:
+//
+//   1. -PbareKitDir=<path>       Use a pre-provisioned copy (e.g. a QuickJS build handed to you).
+//                                We never delete a directory you point us at: a mismatching engine
+//                                is an error, not a wipe.
+//   2. upstream GitHub release   holepunchto/bare-kit prebuilds.zip: dir 'android/' for v8, or
+//                                'android-<engine>/' for other engines (upstream's own naming for
+//                                alternate engines, cf. their darwin-javascriptcore/). Works for v8
+//                                today; for other engines it starts working the day upstream ships
+//                                them — at which point tier 3 goes dormant by itself.
+//   3. local source build        Opt-in: -PbareKitAllowSourceBuild=true. Clones bare-kit at the same
+//                                release tag, builds its Android AAR with the requested engine (one
+//                                CMake flag, BARE_ENGINE), unpacks it into bareKitDir and deletes the
+//                                build tree. Needs the Android NDK version bare-kit pins, CMake,
+//                                Node.js and git. ~1-3.5 GB of temporary disk and 10-30 min, once.
+//
+// The engine currently in bareKitDir is recorded in bareKitDir/.bare-kit-source. Requesting a
+// different engine (or a different pinned -PbareKitTag) wipes the managed default dir and
+// re-provisions; requesting the same one is a no-op, so day-to-day builds cost nothing. To move to
+// a newer upstream release, delete libs/bare-kit or pass -PbareKitTag.
+//
+// Runs at EXECUTION time only — never on an Android Studio Gradle sync — so on a fresh clone the
+// IDE shows the BareKit imports unresolved until the first ./gradlew build populates the jar.
+//
+// Properties:
+//   -PbareKitEngine=v8|quickjs|github:owner/repo   (default v8)
+//   -PbareKitTag=<tag>                             (default: latest release)
+//   -PbareKitDir=<path>                            (default: libs/bare-kit)
+//   -PbareKitAllowSourceBuild=true                 (default: false)
+
+import java.util.Properties
+
+// Engine registry: short name -> the BARE_ENGINE value bare-kit's CMake expects. Adding an engine
+// is one line; a raw 'github:owner/repo' is also accepted as-is, so an engine upstream adds
+// tomorrow works with no code change here.
+def BARE_ENGINES = [
+    v8     : 'github:holepunchto/libv8',
+    quickjs: 'github:holepunchto/libqjs',
+]
+def UPSTREAM = 'holepunchto/bare-kit'
+def MARKER   = '.bare-kit-source'
+
+def bareKitEngine   = (project.findProperty('bareKitEngine') ?: 'v8').toString()
+def bareKitTag      = project.findProperty('bareKitTag')?.toString()
+def userSuppliedDir = project.findProperty('bareKitDir') != null
+// -PbareKitAllowSourceBuild and -PbareKitAllowSourceBuild=true both opt in.
+def allowSourceRaw  = project.findProperty('bareKitAllowSourceBuild')
+def allowSource     = allowSourceRaw != null && (allowSourceRaw.toString().isEmpty() || allowSourceRaw.toString().toBoolean())
+
+def engineRepo = bareKitEngine.contains(':') ? bareKitEngine : BARE_ENGINES[bareKitEngine]
+if (engineRepo == null) {
+    throw new GradleException("bareKitEngine '${bareKitEngine}' is not a known BareKit engine. " +
+        "Valid names: ${BARE_ENGINES.keySet().join(', ')} — or a raw 'github:owner/repo' BARE_ENGINE value.")
+}
+
+def bareKitDir        = file(project.findProperty('bareKitDir') ?: 'libs/bare-kit')
+def bareKitClassesJar = new File(bareKitDir, 'classes.jar')
+def markerFile        = new File(bareKitDir, MARKER)
+// Exposed to build.gradle (jniLibs.srcDirs and the classes.jar dependency).
+ext.bareKitDir        = bareKitDir
+ext.bareKitClassesJar = bareKitClassesJar
+
+// What is in bareKitDir right now. Dirs that predate the marker were always the v8 upstream release.
+def readMarker = {
+    def p = new Properties()
+    if (markerFile.exists()) markerFile.withInputStream { p.load(it) }
+    return p
+}
+def currentEngine = { readMarker().getProperty('engine', 'v8') }
+def currentTag    = { readMarker().getProperty('tag') }
+def writeMarker   = { String source, String tag ->
+    markerFile.text = "engine=${bareKitEngine}\nrepo=${engineRepo}\ntag=${tag}\nsource=${source}\n" +
+                      "built=${new Date().format("yyyy-MM-dd'T'HH:mm:ssXXX")}\n"
+}
+
+def http = { String url, String accept ->
+    def c = new URL(url).openConnection()
+    c.setRequestProperty('User-Agent', 'wdk-core-kotlin-build')   // required by GitHub
+    if (accept) c.setRequestProperty('Accept', accept)
+    return c
+}
+
+// GitHub release metadata: tag + per-asset download URLs. The zip itself is NOT in this response.
+def resolveRelease = {
+    def apiUrl = bareKitTag ? "https://api.github.com/repos/${UPSTREAM}/releases/tags/${bareKitTag}"
+                            : "https://api.github.com/repos/${UPSTREAM}/releases/latest"
+    logger.lifecycle("fetchBareKit: resolving ${apiUrl}")
+    return new groovy.json.JsonSlurper().parse(http(apiUrl, 'application/vnd.github+json').inputStream)
+}
+
+// Tier 2. Streams prebuilds.zip to a temp file and extracts ONLY <platformDir>/bare-kit/** into
+// bareKitDir. Returns false (nothing written) if the archive has no such dir.
+def extractFromRelease = { release, String platformDir ->
+    def asset = release.assets.find { it.name == 'prebuilds.zip' }
+    if (asset == null) throw new GradleException("prebuilds.zip not found in BareKit release ${release.tag_name}")
+    def tmpZip = File.createTempFile('barekit-', '.zip')
+    try {
+        logger.lifecycle("fetchBareKit: downloading ${asset.name} (~${(asset.size / 1024 / 1024) as int} MB) from ${release.tag_name}, looking for '${platformDir}/'")
+        http(asset.browser_download_url, null).inputStream.withStream { input -> tmpZip.withOutputStream { it << input } }
+        def tree   = zipTree(tmpZip)
+        def wanted = tree.matching { include "${platformDir}/bare-kit/**" }
+        if (wanted.isEmpty()) {
+            def available = new TreeSet<String>()
+            tree.visit { if (it.relativePath.segments.length > 0) available.add(it.relativePath.segments[0]) }
+            logger.lifecycle("fetchBareKit: '${platformDir}/' is not in ${release.tag_name} (available: ${available.join(', ')})")
+            return false
+        }
+        if (!userSuppliedDir) delete bareKitDir   // replace only once the new files are in hand
+        copy {
+            from(wanted) {
+                includeEmptyDirs = false
+                eachFile { it.path = it.path.replaceFirst("^${platformDir}/bare-kit/", '') }
+            }
+            into bareKitDir
+        }
+        logger.lifecycle("fetchBareKit: extracted ${platformDir}/bare-kit from ${release.tag_name} -> ${bareKitDir}")
+        return true
+    } finally {
+        tmpZip.delete()
+    }
+}
+
+// `bash -lc` so an nvm-managed Node/npm is on PATH, same as the JS pipeline tasks.
+def which = { String cmd ->
+    def out = new ByteArrayOutputStream()
+    def r = exec {
+        commandLine 'bash', '-lc', "command -v ${cmd}"
+        standardOutput = out; errorOutput = out; ignoreExitValue = true
+    }
+    return r.exitValue == 0 ? out.toString().trim() : null
+}
+
+def androidSdkDir = {
+    def env = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+    if (env) return file(env)
+    def lp = rootProject.file('local.properties')
+    if (lp.exists()) {
+        def p = new Properties(); lp.withInputStream { p.load(it) }
+        if (p.getProperty('sdk.dir')) return file(p.getProperty('sdk.dir'))
+    }
+    return null
+}
+
+// Tier 3 preflight — runs right after the (cheap) clone and before npm install / the NDK build,
+// so a missing toolchain fails in seconds with the exact thing to install. The NDK version is read
+// from the clone, not hardcoded, so it follows upstream bumps. clang ships inside the NDK.
+def preflight = { File work ->
+    def missing  = []
+    def ndkMatch = (new File(work, 'android/build.gradle').text =~ /ndkVersion\s*=?\s*["']([^"']+)["']/)
+    def ndk      = ndkMatch.find() ? ndkMatch.group(1) : null
+    def sdk      = androidSdkDir()
+    if (sdk == null) {
+        missing << 'Android SDK (set ANDROID_HOME, or sdk.dir in local.properties)'
+    } else if (ndk != null && !new File(sdk, "ndk/${ndk}").exists()) {
+        missing << "Android NDK ${ndk} — bare-kit pins this exact version (Android Studio > SDK Manager > SDK Tools > NDK (Side by side), or: sdkmanager \"ndk;${ndk}\")"
+    }
+    if ((sdk == null || !new File(sdk, 'cmake').exists()) && which('cmake') == null) {
+        missing << 'CMake (Android Studio > SDK Manager > SDK Tools > CMake, or: npm i -g cmake-runtime)'
+    }
+    if (which('node') == null || which('npm') == null) {
+        missing << 'Node.js + npm (bare-kit fetches its JavaScript modules with npm)'
+    }
+    // Socket Firewall: bare-kit's dependency installer (cmake-fetch) wraps every nested `npm install`
+    // in `sfw` whenever it is on PATH, and sfw refuses to run without a token — so a half-configured
+    // install fails 3 minutes in with "SOCKET_API_TOKEN must be a valid API token". Catch it here.
+    def sfw = which('sfw')
+    def socketTokenVars = ['SOCKET_API_TOKEN', 'SOCKET_API_KEY', 'SOCKET_CLI_API_TOKEN', 'SOCKET_CLI_API_KEY',
+                           'SOCKET_SECURITY_API_TOKEN', 'SOCKET_SECURITY_API_KEY']   // all names sfw accepts
+    if (sfw != null && !socketTokenVars.any { System.getenv(it) }) {
+        missing << "SOCKET_API_TOKEN (or SOCKET_API_KEY) — Socket Firewall is installed (${sfw}) and bare-kit's CMake dependency installer calls the sfw binary directly for its nested npm installs, but no token is present in the environment Gradle runs in. Export it as an environment variable — a shell alias that inlines the key does not reach this build — or take sfw off PATH for this build (a security decision)."
+    }
+    if (!missing.isEmpty()) {
+        throw new GradleException("Cannot build BareKit from source — please install/configure:\n  - ${missing.join('\n  - ')}")
+    }
+    logger.lifecycle("fetchBareKit: preflight ok (NDK ${ndk ?: 'unpinned'}, SDK ${sdk})")
+}
+
+// Tier 3. Clone upstream at the release tag, build its Android AAR with BARE_ENGINE=<engine>
+// (injected via an init script so no upstream file is edited), unpack the AAR into bareKitDir —
+// exactly what upstream's prebuilds/Makefile does — and delete the build tree whatever happens.
+def buildFromSource = { String tag ->
+    def work = layout.buildDirectory.dir('bare-kit-src').get().asFile   // under build/, so `clean` reclaims it too
+    def init = rootProject.file('gradle/bare-kit-engine.init.gradle')
+    delete work
+    try {
+        logger.lifecycle("fetchBareKit: building BareKit ${tag} from source with BARE_ENGINE=${engineRepo} — this takes a while and uses ~1-3.5 GB of temporary disk under ${work}")
+        exec { commandLine 'git', 'clone', '--depth', '1', '--branch', tag, "https://github.com/${UPSTREAM}", work.absolutePath }
+        preflight(work)
+        exec { workingDir work; commandLine 'bash', '-lc', 'npm install' }
+        exec {
+            workingDir work
+            commandLine 'bash', '-lc', "./gradlew assembleRelease --no-daemon -I '${init.absolutePath}' -PbareEngine='${engineRepo}'"
+        }
+        def aars = fileTree("${work}/android/build/outputs/aar") { include '*-release.aar' }.files
+        if (aars.size() != 1) throw new GradleException("Expected exactly one release AAR from the bare-kit build, found: ${aars}")
+        def aar = aars.first()
+        if (!userSuppliedDir) delete bareKitDir   // replace only once the new build is in hand
+        copy { from zipTree(aar); into bareKitDir }
+        logger.lifecycle("fetchBareKit: built ${aar.name} (${(aar.length() / 1024 / 1024) as int} MB) -> ${bareKitDir}")
+    } finally {
+        delete work
+    }
+}
+
+tasks.register('fetchBareKit') {
+    description "Provision BareKit (classes.jar + native engine libs) into ${bareKitDir}: -PbareKitDir, upstream release, or opt-in local source build."
+    outputs.dir bareKitDir
+    // Evaluated on EVERY run, including the very first. A populated dir holding the requested
+    // engine (and pinned tag, if any) always skips the task.
+    onlyIf {
+        !bareKitClassesJar.exists() ||
+        currentEngine() != bareKitEngine ||
+        (bareKitTag != null && currentTag() != bareKitTag)
+    }
+    doLast {
+        if (bareKitClassesJar.exists()) {
+            def why = currentEngine() != bareKitEngine ? "engine ${currentEngine()} -> ${bareKitEngine}"
+                                                       : "tag ${currentTag()} -> ${bareKitTag}"
+            if (userSuppliedDir) {
+                throw new GradleException("-PbareKitDir=${bareKitDir} holds a BareKit build that does not match the request (${why}). " +
+                    "We never modify a directory you point us at: pass the matching -PbareKitEngine/-PbareKitTag, or point -PbareKitDir elsewhere.")
+            }
+            logger.lifecycle("fetchBareKit: ${why}; ${bareKitDir} is replaced only once the new build is in hand")
+        }
+
+        def release     = resolveRelease()
+        def platformDir = bareKitEngine == 'v8' ? 'android' : "android-${bareKitEngine}"
+        if (extractFromRelease(release, platformDir)) {
+            writeMarker('upstream-release', release.tag_name)
+            return
+        }
+        if (!allowSource) {
+            throw new GradleException("BareKit engine '${bareKitEngine}' (dir '${platformDir}/') is not in upstream release ${release.tag_name}. " +
+                "Either pass -PbareKitDir=<a prebuilt copy>, or opt in to a local source build with -PbareKitAllowSourceBuild=true " +
+                "(needs the Android NDK version bare-kit pins, CMake, Node.js and git; ~1-3.5 GB of temporary disk and 10-30 minutes, once).")
+        }
+        buildFromSource(release.tag_name)
+        writeMarker('local-build', release.tag_name)
+    }
+}

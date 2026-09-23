@@ -3,6 +3,11 @@ plugins {
     id 'org.jetbrains.kotlin.android' version '1.9.22'
 }
 
+// BareKit provisioning — classes.jar + per-ABI native engine libs into libs/bare-kit. The
+// fetchBareKit task, engine selection (-PbareKitEngine) and the opt-in local source build live in
+// gradle/bare-kit.gradle, which defines bareKitDir / bareKitClassesJar used below.
+apply from: 'gradle/bare-kit.gradle'
+
 android {
     namespace 'to.tether.wdk.core'
     compileSdk 35
@@ -29,7 +34,7 @@ android {
 
     sourceSets {
         main {
-            jniLibs.srcDirs += ["src/main/addons", "libs/bare-kit/jni"]
+            jniLibs.srcDirs += ["src/main/addons", "${bareKitDir}/jni"]
             assets.srcDirs += "src/main/assets"
             java.srcDirs = ['src/main/java']
             res.srcDirs = ['src/main/res']
@@ -82,87 +87,6 @@ tasks.register("copyBundle", Copy) {
 }
 
 preBuild.dependsOn copyAddons, copyBundle
-
-// --- BareKit native lib auto-fetch ---
-// WdkCore.kt compiles against to.holepunch.bare.kit.* (classes.jar) and packages the per-ABI
-// native libs (jni/) at runtime. Both come from BareKit's public GitHub releases
-// (holepunchto/bare-kit) — no secrets, all Gradle-native (no gh/curl/unzip needed on the host).
-// This runs at EXECUTION time only — never on an Android Studio Gradle sync — and is
-// skipped whenever the lib already exists, so it's a one-time fetch per clone. On a fresh clone the
-// IDE shows the BareKit imports unresolved until the first ./gradlew build populates the jar, for Android Studio 
-// development - as it's not part of gradle sync you need to build it before writing your code on top of this library.
-// Potential TODO: add a fallback in dependencies so gradle sync can resolve the BareKit download.
-// Overrides: -PbareKitDir=<path> (use a pre-provisioned copy), -PbareKitTag=<tag> (pin a release),
-// -PbareKitEngine=v8|quickjs (default v8).
-def bareKitDir = file(project.findProperty('bareKitDir') ?: 'libs/bare-kit')
-def bareKitClassesJar = new File(bareKitDir, 'classes.jar')
-def bareKitEngine = (project.findProperty('bareKitEngine') ?: 'v8').toString()
-
-tasks.register('fetchBareKit') {
-    description 'Fetch BareKit classes.jar + native libs from GitHub releases if missing.'
-    outputs.dir bareKitDir
-    // onlyIf is evaluated on EVERY run — including the very first, before Gradle has any task
-    // history. A present jar therefore always skips the task.
-    // Delete libs/bare-kit (or point -PbareKitDir elsewhere) to force a re-fetch, 
-    // e.g. after changing -PbareKitTag.
-    onlyIf { !bareKitClassesJar.exists() }
-    doLast {
-        // Map the requested engine to its platform dir inside prebuilds.zip. The default V8 build
-        // ships under 'android/'; alternative engines are expected as a sibling 'android-<engine>/'
-        // (e.g. a future 'android-quickjs/'). We do NOT hardcode which engines exist — step 3 looks
-        // for this dir in the archive and fails listing what's actually there if it's absent, so a
-        // new engine works the day BareKit publishes it, no code change.
-        def platformDir = bareKitEngine == 'v8' ? 'android' : "android-${bareKitEngine}"
-
-        // 1) Metadata call: a small JSON describing the release (tag + per-asset download URLs) —
-        //    latest unless -PbareKitTag pins one. The zip is NOT in this response; the JSON only
-        //    tells us its URL. Accept selects GitHub's JSON media type; User-Agent is required.
-        def tag = project.findProperty('bareKitTag')
-        def apiUrl = tag ? "https://api.github.com/repos/holepunchto/bare-kit/releases/tags/${tag}"
-                         : "https://api.github.com/repos/holepunchto/bare-kit/releases/latest"
-        logger.lifecycle("fetchBareKit: resolving ${apiUrl}")
-        def api = new URL(apiUrl).openConnection()
-        api.setRequestProperty('User-Agent', 'wdk-core-kotlin-build')
-        api.setRequestProperty('Accept', 'application/vnd.github+json')
-        def release = new groovy.json.JsonSlurper().parse(api.inputStream)
-        def asset = release.assets.find { it.name == 'prebuilds.zip' }
-        if (asset == null) {
-            throw new GradleException("prebuilds.zip not found in BareKit release ${release.tag_name}")
-        }
-
-        // 2) Download call: stream the actual zip bytes (buffered chunks, low RAM) to a temp FILE
-        //    on disk (the OS temp dir, not build/) — nothing platform-specific reaches libs/bare-kit yet.
-        def tmpZip = File.createTempFile('barekit-', '.zip')
-        try {
-            logger.lifecycle("fetchBareKit: downloading ${asset.name} (~${(asset.size / 1024 / 1024) as int} MB) from ${release.tag_name}")
-            def download = new URL(asset.browser_download_url).openConnection()
-            download.setRequestProperty('User-Agent', 'wdk-core-kotlin-build')
-            download.inputStream.withStream { input -> tmpZip.withOutputStream { it << input } }
-
-            // 3) Extract ONLY <platformDir>/bare-kit/** into libs/bare-kit (other platforms never
-            //    reach that dir). If the engine's dir isn't in the archive, fail with the list of
-            //    platforms that ARE — the build then can't compile, which is the point.
-            def tree = zipTree(tmpZip)
-            def wanted = tree.matching { include "${platformDir}/bare-kit/**" }
-            if (wanted.isEmpty()) {
-                def available = new TreeSet<String>()
-                tree.visit { if (it.relativePath.segments.length > 0) available.add(it.relativePath.segments[0]) }
-                throw new GradleException("BareKit engine '${bareKitEngine}' (dir '${platformDir}/') not found in ${asset.name} of ${release.tag_name}. Available: ${available.join(', ')}.")
-            }
-            delete bareKitDir
-            copy {
-                from(wanted) {
-                    includeEmptyDirs = false
-                    eachFile { it.path = it.path.replaceFirst("^${platformDir}/bare-kit/", '') }
-                }
-                into bareKitDir
-            }
-            logger.lifecycle("fetchBareKit: extracted ${platformDir}/bare-kit from ${release.tag_name} -> ${bareKitDir}")
-        } finally {
-            tmpZip.delete()
-        }
-    }
-}
 
 dependencies {
     api files(bareKitClassesJar) { builtBy 'fetchBareKit' }
