@@ -41,29 +41,53 @@ dependencies {
 }
 ```
 > Note: See build.gradle from wdk-starter-kotlin for a [reference](https://github.com/Tetherto/wdk-starter-kotlin)
-### Step 2: BareKit Android Runtime (fetched automatically)
+### Step 2: BareKit Android Runtime (provisioned automatically)
 
-The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the latest [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) release and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release.
+The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries (BareKit's Android AAR, unpacked). These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task (in [`gradle/bare-kit.gradle`](gradle/bare-kit.gradle)) provisions them into `libs/bare-kit/`, by default from the latest [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) public release. No secrets or auth.
 
-It's a **one-time, on-demand** fetch: it runs only when `libs/bare-kit/classes.jar` is missing, and **never during an Android Studio Gradle _sync_** (only during an actual build). So on a fresh clone the `to.holepunch.bare.kit.*` imports show unresolved until your first `./gradlew` build populates them — run one build (or Build ▸ Make if on Android Studio) and they resolve for good.
+It's **on-demand**: it runs only when `libs/bare-kit/classes.jar` is missing, or when the engine/tag you ask for differs from what's already there (recorded in `libs/bare-kit/.bare-kit-source`). Same request → no-op, so day-to-day builds cost nothing. It **never runs during an Android Studio Gradle _sync_** (only during an actual build), so on a fresh clone the `to.holepunch.bare.kit.*` imports show unresolved until your first `./gradlew` build populates them — run one build (or Build ▸ Make) and they resolve for good.
 
-Override with Gradle properties:
+#### Choosing the JS engine
+
+BareKit's JavaScript engine is a build-time choice. Both run the same CJS worklet bundle (`convertEsmToCjs: true`, see [`js/README.md`](js/README.md)); pick by size vs. speed:
+
+| Engine | `libbare-kit.so` per ABI | JIT | Notes |
+| ------ | ------------------------ | --- | ----- |
+| **V8** (default) | ~65 MB | yes | Fastest on the pure-JavaScript crypto paths (curve math and PBKDF2 in the wallet packages run in JS). |
+| **QuickJS** | ~3.8 MB (~60 MB smaller) | no | Validated end-to-end on this library's instrumented suite. Those same JS-heavy crypto paths pay the no-JIT cost — a benchmark on low-end hardware is a pending follow-up, so no performance claim is made here. |
+
+Holepunch's releases currently ship **V8 only** for Android. QuickJS (or any other engine) is provisioned in tiers — the first that works wins:
+
+1. **`-PbareKitDir=<path>`** — use a prebuilt copy (e.g. a QuickJS build shared with you). We never modify or delete a directory you point us at; a mismatching engine is an error.
+2. **Upstream release** — `android/` for V8, `android-<engine>/` for others (upstream's own naming for alternate engines). Works for V8 today; for other engines it starts working the day upstream ships them, and tier 3 goes dormant by itself.
+3. **Local source build** (opt-in) — `-PbareKitAllowSourceBuild=true`. Clones `bare-kit` at the *same release tag*, builds its Android AAR with the requested engine (`BARE_ENGINE`, one CMake flag, injected via [`gradle/bare-kit-engine.init.gradle`](gradle/bare-kit-engine.init.gradle) so no upstream file is edited), unpacks it into `libs/bare-kit/` and deletes the build tree.
+
+```bash
+# QuickJS, built locally because upstream has no Android QuickJS prebuild yet
+./gradlew assembleDebug -PbareKitEngine=quickjs -PbareKitAllowSourceBuild=true
+```
+
+The source build needs the **Android NDK version bare-kit pins** (read from its `android/build.gradle`; currently `28.2.13676358`), **CMake**, **Node.js** and **git**, and uses **~1–3.5 GB of temporary disk** under `build/bare-kit-src/` (deleted afterwards, whatever happens) for **10–30 minutes, once**. It checks those up front and fails in seconds naming exactly what to install. If [Socket Firewall](https://socket.dev) (`sfw`) is installed, `SOCKET_API_TOKEN` (or `SOCKET_API_KEY`) must be **exported as an environment variable** in the environment Gradle runs in — bare-kit's dependency installer calls the `sfw` binary directly for its nested `npm install`s, so a shell alias that inlines the key never reaches it, and `sfw` refuses to run without one (preflight catches this too). Keep the key out of the repo: never put it in the project's `gradle.properties`. Without the flag you get an actionable error instead of a surprise 20-minute build.
+
+Gradle properties:
 
 | Property | Default | Effect |
 | -------- | ------- | ------ |
-| `-PbareKitEngine=<engine>` | `v8` | Which JS-engine build to fetch. `v8` uses the archive's `android/` dir; any other value uses `android-<engine>/` (e.g. a future `quickjs`). If the archive has no such dir the build fails listing what's available. See [`js/README.md`](js/README.md) for engine trade-offs. |
-| `-PbareKitTag=<tag>` | latest | Pin a specific BareKit release instead of the latest. |
-| `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped, or your own local BareKit build) instead of downloading. |
+| `-PbareKitEngine=<engine>` | `v8` | `v8`, `quickjs`, or a raw `github:owner/repo` `BARE_ENGINE` value (so an engine upstream adds tomorrow works with no code change). Unknown names fail instantly, listing the valid ones. |
+| `-PbareKitAllowSourceBuild=true` | off | Opt in to tier 3 above when the engine isn't in the upstream release. |
+| `-PbareKitTag=<tag>` | latest | Pin a specific BareKit release (applies to both the download and the source build). |
+| `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped, a shared prebuilt, or your own build). Never modified by us. |
 
-To force a re-fetch — e.g. after changing `-PbareKitTag`/`-PbareKitEngine` — delete `libs/bare-kit/`.
+Switching `-PbareKitEngine` or `-PbareKitTag` re-provisions `libs/bare-kit/` automatically — the old contents are replaced only once the new build is in hand, so a failed attempt never leaves you without libs. With no tag pinned, an already-provisioned dir is **not** refreshed when upstream publishes a new release: delete `libs/bare-kit/` (or pass `-PbareKitTag`) to move.
 
 <details>
-<summary>Manual placement (offline / local build)</summary>
+<summary>Manual placement (offline / your own build)</summary>
 
-If you'd rather supply it yourself, drop the BareKit Android files under `libs/bare-kit/` (or wherever `-PbareKitDir` points) in this layout; `fetchBareKit` then finds the `classes.jar` and skips:
+If you'd rather supply it yourself, drop the BareKit Android files under `libs/bare-kit/` (or wherever `-PbareKitDir` points) in this layout; `fetchBareKit` then finds the `classes.jar` and skips. Add a `.bare-kit-source` with at least `engine=<name>` so engine switching knows what's there (a dir without one is assumed to be V8):
 
 ```
 libs/bare-kit/
+├── .bare-kit-source      # engine=quickjs, tag=v2.5.5, source=local-build|upstream-release
 ├── AndroidManifest.xml
 ├── classes.jar
 └── jni/
@@ -82,7 +106,7 @@ libs/bare-kit/
 ```
 </details>
 
-`build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files('libs/bare-kit/classes.jar') { builtBy 'fetchBareKit' }` (the compile classpath), so the fetch runs before compilation automatically.
+`build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files(bareKitClassesJar) { builtBy 'fetchBareKit' }` (the compile classpath), so provisioning runs before compilation automatically.
 
 ### Step 3: Build
 
