@@ -15,5 +15,8 @@
   "scripts": {
     "generate": "wdk-worklet-bundler generate --install --verbose",
     "clean": "wdk-worklet-bundler clean -y"
+  },
+  "overrides": {
+    "bare-lief": "0.2.7"
   }
 }

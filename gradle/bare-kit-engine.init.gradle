@@ -1,0 +1,17 @@
+// Gradle init script applied to bare-kit's OWN build (not ours) by fetchBareKit's local source
+// build:  ./gradlew assembleRelease -I <this file> -PbareEngine=<github:owner/repo>
+//
+// bare-kit's android/build.gradle hardcodes its CMake arguments, so this appends the engine flag
+// after that project is evaluated, without editing any upstream file. BARE_ENGINE is the value
+// bare-kit's CMake expects, e.g. github:holepunchto/libqjs (QuickJS) or github:holepunchto/libv8
+// (V8, upstream's default). Our afterEvaluate is registered before AGP's, so the argument is in
+// place before AGP builds its native configuration.
+allprojects {
+    afterEvaluate { p ->
+        def engine = p.findProperty('bareEngine')
+        if (engine && (p.plugins.hasPlugin('com.android.library') || p.plugins.hasPlugin('com.android.application'))) {
+            p.extensions.getByName('android').defaultConfig.externalNativeBuild.cmake.arguments("-DBARE_ENGINE=${engine}".toString())
+            p.logger.lifecycle("bare-kit-engine.init: ${p.path} cmake arguments += -DBARE_ENGINE=${engine}")
+        }
+    }
+}

@@ -84,8 +84,8 @@ Different JS engines support different module systems:
 
 | Engine | Used by | ESM? | CJS? |
 | ------ | ------- | ---- | ---- |
-| V8     | Heavier with JIT BareKit build - faster runtime on potent hardware | ✅ | ✅ |
-| QuickJS | recommended Android target for this repo (`libbare-kit.so`, ~60 MB smaller than V8) | ❌ | ✅ |
+| V8     | Default Android build — JIT, faster on the pure-JS crypto paths; `libbare-kit.so` ~65 MB per ABI | ✅ | ✅ |
+| QuickJS | Smallest Android build — `libbare-kit.so` ~3.8 MB per ABI (~60 MB smaller than V8), no JIT | ❌ | ✅ |
 | JSC    | iOS / macOS | ❌ | ✅ |
 
 CJS runs on **all three**; raw ESM only runs on V8 with BareKit. `convertEsmToCjs: true` makes the
@@ -96,9 +96,14 @@ Only set it to `false` if you *knowingly* ship a V8-only build and want to keep 
 
 ### Which engine you actually get
 
-`build.gradle`'s `fetchBareKit` task pulls the engine build from BareKit's public
-releases. Pick the engine with `-PbareKitEngine`: **V8** (`-PbareKitEngine=v8`, the
-default) or **QuickJS** (`-PbareKitEngine=quickjs`, the recommended Android target —
-`libbare-kit.so` is ~60 MB smaller per ABI, no JIT). Either way the bundle above is
-the *same* CJS bundle (`convertEsmToCjs: true`), so it runs unchanged on V8, QuickJS
-or JSC.
+The engine is a build-time choice made in `build.gradle`, not here. The `fetchBareKit`
+task (`gradle/bare-kit.gradle`) provisions BareKit's Android build into `libs/bare-kit/`;
+pick the engine with `-PbareKitEngine`: **V8** (`v8`, the default — JIT, ~65 MB per ABI)
+or **QuickJS** (`quickjs` — no JIT, ~3.8 MB per ABI). Neither is "recommended" over the
+other: it's a size-vs-speed trade-off, and the JS-heavy crypto paths (curve math, PBKDF2)
+are the ones that pay for the missing JIT on QuickJS. Holepunch ships no Android QuickJS
+prebuild yet, so QuickJS is either built locally from source (opt-in,
+`-PbareKitAllowSourceBuild=true`) or supplied as a prebuilt via `-PbareKitDir` — see
+[Choosing the JS engine](../README.md#choosing-the-js-engine) in the root README for the
+tiers, prerequisites and cost. Either way the bundle above is the *same* CJS bundle
+(`convertEsmToCjs: true`), so it runs unchanged on V8, QuickJS or JSC.
