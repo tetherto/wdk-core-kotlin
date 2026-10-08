@@ -245,7 +245,7 @@ module.exports = {
   },
   options: {
     linkAddons: true,
-    platforms: ['android'],
+    // addon platforms derive from `targets` (android-* → android); no `platforms` option
     targets: ['android-arm64', 'android-arm', 'android-ia32', 'android-x64'],
     convertEsmToCjs: true // keep true: QuickJS (and iOS JSC) only run CJS, not ESM
   }
