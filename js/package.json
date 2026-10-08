@@ -15,5 +15,8 @@
   "scripts": {
     "generate": "wdk-worklet-bundler generate --install --verbose",
     "clean": "wdk-worklet-bundler clean -y"
+  },
+  "overrides": {
+    "bare-node-runtime": "1.5.0"
   }
 }
