@@ -68,7 +68,7 @@ module.exports = {
 
   options: {
     linkAddons:      true,                       // link native addons (default true for jsonrpc)
-    platforms:       ['android'],                // which platforms to link addons for
+    // addon platforms derive from `targets` (android-* → android); there is no `platforms` option
     targets:         ['android-arm64', 'android-arm', 'android-ia32', 'android-x64'], // which device architecture you target
     convertEsmToCjs: true                        // see below — keep true for Android
   }
@@ -102,3 +102,8 @@ default) or **QuickJS** (`-PbareKitEngine=quickjs`, the recommended Android targ
 `libbare-kit.so` is ~60 MB smaller per ABI, no JIT). Either way the bundle above is
 the *same* CJS bundle (`convertEsmToCjs: true`), so it runs unchanged on V8, QuickJS
 or JSC.
+
+## Pinned dependencies (`overrides` in `package.json`)
+
+- **`bare-node-runtime` → `1.5.0`**: ≥ 1.5.1 eagerly loads `bare-worker/global`, which aborts the JSC-flavoured BareKit at boot (holepunchto/bare-node-runtime#13). 1.5.0 is the version every engine gate (V8, QuickJS, JSC) passed on. Caveat: 1.5.0 still declares `node 20.0.0`, so dependencies that require `engines.node ≥ 20.19` (e.g. `@noble/*` ≥ 2.3, `@bitcoinerlab/descriptors` 3.1.7) would throw `UNSUPPORTED_ENGINE` under Bare — check `npm ls` for those before upgrading them. In practice this does not affect the bundled worklet: the packed bundle carries pre-resolved imports in its header, so `bare-module-resolve` (where `validateEngines` lives) never runs on device — it only runs under Node at pack time, where the Node version is real. Only tooling that does live resolution (e.g. running `bare index.js` directly, as the btc harness does) can hit it.
+
