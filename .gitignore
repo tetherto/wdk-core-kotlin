@@ -37,7 +37,6 @@ js/node_modules/
 js/.wdk/
 js/.wdk-bundle/
 js/android-addons/
-js/package-lock.json
 
 # Signing files
 *.jks

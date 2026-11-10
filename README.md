@@ -43,7 +43,9 @@ dependencies {
 > Note: See build.gradle from wdk-starter-kotlin for a [reference](https://github.com/Tetherto/wdk-starter-kotlin)
 ### Step 2: BareKit Android Runtime (fetched automatically)
 
-The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the latest [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) release and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release.
+The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the **newest BareKit 2.x** release from [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release.
+
+**Engine: V8 only.** The 2.x Android prebuild ships the V8 engine, and that is the only engine this library is built and tested with. BareKit 3.x is a different distribution (it publishes no `prebuilds.zip`; Android support arrives through [bare-stow](https://github.com/holepunchto/bare-stow)) and is adopted in phase 3b of the [roadmap](https://github.com/tetherto/wdk-worklet-bundler/issues/84), so 3.x tags are rejected here. Other engines (JSC, QuickJS) come with that move; until then they are only possible with your own BareKit build — see the manual-placement section below.
 
 It's a **one-time, on-demand** fetch: it runs only when `libs/bare-kit/classes.jar` is missing, and **never during an Android Studio Gradle _sync_** (only during an actual build). So on a fresh clone the `to.holepunch.bare.kit.*` imports show unresolved until your first `./gradlew` build populates them — run one build (or Build ▸ Make if on Android Studio) and they resolve for good.
 
@@ -51,14 +53,15 @@ Override with Gradle properties:
 
 | Property | Default | Effect |
 | -------- | ------- | ------ |
-| `-PbareKitEngine=<engine>` | `v8` | Which JS-engine build to fetch. `v8` uses the archive's `android/` dir; any other value uses `android-<engine>/` (e.g. a future `quickjs`). If the archive has no such dir the build fails listing what's available. See [`js/README.md`](js/README.md) for engine trade-offs. |
-| `-PbareKitTag=<tag>` | latest | Pin a specific BareKit release instead of the latest. |
-| `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped, or your own local BareKit build) instead of downloading. |
+| `-PbareKitTag=<tag>` | newest 2.x release | Pin a specific BareKit **2.x** release (`v2.<minor>.<patch>`). Anything else — including any 3.x tag — is rejected at configuration time. |
+| `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped mirror, or your own BareKit build — see below) instead of downloading. Both the `classes.jar` and the `jni/` libraries are taken from there. |
 
-To force a re-fetch — e.g. after changing `-PbareKitTag`/`-PbareKitEngine` — delete `libs/bare-kit/`.
+`-PbareKitEngine` no longer exists; passing it fails the build with a pointer to `-PbareKitDir`.
+
+To force a re-fetch — e.g. after changing `-PbareKitTag` — delete `libs/bare-kit/`.
 
 <details>
-<summary>Manual placement (offline / local build)</summary>
+<summary>Manual placement (offline / your own BareKit build, e.g. QuickJS or JSC)</summary>
 
 If you'd rather supply it yourself, drop the BareKit Android files under `libs/bare-kit/` (or wherever `-PbareKitDir` points) in this layout; `fetchBareKit` then finds the `classes.jar` and skips:
 
@@ -80,9 +83,11 @@ libs/bare-kit/
         ├── libbare-kit.so
         └── libc++_shared.so
 ```
+
+**Bringing your own engine (unsupported).** Holepunch ships no QuickJS or JSC prebuild for Android, but you can build BareKit 2.x yourself with another engine (its Android build takes the engine as the `BARE_ENGINE` CMake option, e.g. `github:holepunchto/libqjs`), unpack the resulting AAR into the layout above and point `-PbareKitDir` at it. Keep the `bare-node-runtime` override from [`js/package.json`](js/package.json) (see [`js/README.md`](js/README.md#pinned-dependencies)): it is what keeps a BareKit 2.x worklet booting. The same CJS bundle runs unchanged. We last validated QuickJS this way on 2026-11-09 and have not re-tested it since; you own the engine/runtime compatibility, and V8 is the recommendation until bare-stow manages engine selection.
 </details>
 
-`build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files('libs/bare-kit/classes.jar') { builtBy 'fetchBareKit' }` (the compile classpath), so the fetch runs before compilation automatically.
+`build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files(bareKitClassesJar) { builtBy 'fetchBareKit' }` (the compile classpath), both relative to `-PbareKitDir`, so the fetch runs before compilation automatically.
 
 ### Step 3: Build
 
@@ -245,14 +250,14 @@ module.exports = {
   },
   options: {
     linkAddons: true,
-    platforms: ['android'],
+    // addon platforms derive from `targets` (android-* → android); there is no `platforms` option
     targets: ['android-arm64', 'android-arm', 'android-ia32', 'android-x64'],
-    convertEsmToCjs: true // keep true: QuickJS (and iOS JSC) only run CJS, not ESM
+    convertEsmToCjs: true // keep true: harmless on V8, required by any CJS-only engine (JSC, QuickJS)
   }
 }
 ```
 
-Then rerun `npm run generate` and rebuild the AAR. For a field-by-field explanation (especially `convertEsmToCjs` and the engine differences), see [`js/README.md`](js/README.md).
+Then rerun `npm run generate` and rebuild the AAR. For a field-by-field explanation (especially `convertEsmToCjs` and the pinned dependencies), see [`js/README.md`](js/README.md).
 
 ## Architecture
 
@@ -273,13 +278,15 @@ Your App
   └── BareKit Android runtime (libs/bare-kit/)
 ```
 
+This is the **beta.17 line**: `@tetherto/wdk-worklet-bundler` and `@tetherto/pear-wrk-wdk` are pinned to `1.0.0-beta.17`, the last releases that speak JSON-RPC, running on BareKit 2.x with V8. The next line is built on [bare-stow](https://github.com/holepunchto/bare-stow) — a generated Kotlin harness, bare-rpc/HRPC instead of JSON-RPC, BareKit 3.x — see the [roadmap](https://github.com/tetherto/wdk-worklet-bundler/issues/84), phase 3b.
+
 ## Requirements
 
 - Android `minSdk` 31, `compileSdk` 35
 - Kotlin 1.9.22+ with coroutines
 - JDK 17
 - Node.js (for building the worklet bundle)
-- Android NDK + supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`
+- Supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` — all prebuilt; the Android NDK is only needed if you build BareKit yourself
 
 ## License
 
