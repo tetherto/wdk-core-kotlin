@@ -86,7 +86,7 @@ Different JS engines support different module systems:
 | Engine | Where | ESM? | CJS? |
 | ------ | ----- | ---- | ---- |
 | V8     | **This library** — the engine in every BareKit 2.x Android prebuild (`libbare-kit.so` ~65 MB per ABI, JIT) | ✅ | ✅ |
-| JSC    | iOS / macOS (`wdk-core-swift`) | ❌ | ✅ |
+| JSC    | `wdk-core-swift` runs V8 by default and offers JSC through a documented switch; discouraged, and the consuming team owns the known engine issues (e.g. the iOS 26 crash in tetherto/wdk-core-swift#22) | ❌ | ✅ |
 | QuickJS | No upstream Android prebuild; only via your own BareKit build (root README, Step 2) | ❌ | ✅ |
 
 `convertEsmToCjs: true` makes the bundler run esbuild over the bundle's `.js`/`.mjs`/`.cjs` files and
@@ -110,7 +110,9 @@ instrumented suite on a device:
 - **`@tetherto/wdk-worklet-bundler` and `@tetherto/pear-wrk-wdk` at exactly `1.0.0-beta.17`.** These
   are the last releases of the JSON-RPC line. Later releases move to bare-stow and drop the JSON-RPC
   transport this library speaks, so a caret range would break the build or the worklet at boot.
-  `package-lock.json` is committed so a fresh clone resolves the same wallet packages too.
+  `package-lock.json` is committed so a fresh clone resolves the same wallet packages too, and it is
+  a Gradle input: a lockfile-only bump (Dependabot, `npm audit fix`) re-runs `npmInstall` and
+  `generateBundle` on an existing checkout instead of leaving a stale bundle behind.
 - **`overrides.bare-node-runtime = 1.5.0`.** From 1.5.1 the runtime's globals eagerly load
   `bare-worker/global` (`BroadcastChannel`, `MessageChannel`), which drags in `bare-thread` and a newer
   `bare-module` than BareKit 2.x embeds: the worklet aborts at its first request with

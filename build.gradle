@@ -50,8 +50,10 @@ android {
 // onlyIf, we declare each task's inputs/outputs and let Gradle's own up-to-date
 // check drive it: a task is skipped when its inputs+outputs are unchanged and
 // re-run when they change. So editing only Kotlin skips the whole JS pipeline,
-// while editing js/wdk.config.js (or js/package.json) triggers a regenerate and
-// the Copy tasks recopy the fresh output. (`bash -lc` runs a login shell so the
+// while editing js/wdk.config.js, js/package.json or js/package-lock.json triggers
+// a reinstall/regenerate and the Copy tasks recopy the fresh output. The lockfile
+// is an input on purpose as without it existing checkouts would keep
+// shipping the old node_modules in the bundle. (`bash -lc` runs a login shell so the
 // nvm-managed Node is on PATH.) The ESM->CJS conversion (options.convertEsmToCjs
 // in js/wdk.config.js) keeps the bundle CommonJS: V8, the only engine this library
 // ships with, runs it as-is, and a CJS-only engine (JSC, QuickJS) would require it.
@@ -61,6 +63,7 @@ tasks.register("npmInstall", Exec) {
     workingDir "js"
     commandLine "bash", "-lc", "npm install"
     inputs.file("js/package.json")
+    inputs.file("js/package-lock.json")
     outputs.dir("js/node_modules")
 }
 
@@ -70,13 +73,17 @@ tasks.register("generateBundle", Exec) {
     dependsOn npmInstall
     inputs.file("js/wdk.config.js")
     inputs.file("js/package.json")
+    inputs.file("js/package-lock.json")
     outputs.dir("js/.wdk-bundle")
     outputs.dir("js/android-addons")
 }
 
 // Copy tasks are incremental on their own: they recopy exactly when generateBundle
-// produces new output and are skipped otherwise.
-tasks.register("copyAddons", Copy) {
+// produces new output and are skipped otherwise. copyAddons is a Sync, not a Copy:
+// it makes src/main/addons match js/android-addons exactly, so an addon that a
+// dependency bump or a removed wallet package no longer produces is deleted
+// instead of staying behind as a stale .so in the APK.
+tasks.register("copyAddons", Sync) {
     from "js/android-addons"
     into "src/main/addons"
     dependsOn generateBundle
