@@ -59,7 +59,7 @@ jobs:
 
       - name: Set up Android SDK
         if: matrix.language == 'java-kotlin'
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4   # v3 still installs the removed 'tools' package and fails
 
       - name: Install Android platform / build-tools
         if: matrix.language == 'java-kotlin'
@@ -69,17 +69,22 @@ jobs:
       # To COMPILE the Kotlin we only need its classes.jar so that the imports
       # `to.holepunch.bare.kit.{IPC,Worklet}` in WdkCore.kt resolve — the native .so
       # libraries are runtime-only and are not needed for compilation/extraction.
-      # We always use the LATEST release (not a pinned tag).
-      - name: Resolve latest BareKit release
+      # We use the NEWEST 2.x release, never `latest`: bare-kit 3.x publishes no prebuilds.zip
+      # (Android 3.x arrives through bare-stow, roadmap tetherto/wdk-worklet-bundler#84 phase 3b).
+      # Same rule as fetchBareKit in build.gradle.
+      - name: Resolve newest BareKit 2.x release
         if: matrix.language == 'java-kotlin'
         id: barekit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG=$(gh release view --repo holepunchto/bare-kit --json tagName --jq .tagName)
+          # `gh release list` is newest-first, so the first v2.x.y tag is the newest 2.x release.
+          TAG=$(gh release list --repo holepunchto/bare-kit --limit 100 --json tagName \
+            --jq '[.[].tagName | select(test("^v2\\.[0-9]+\\.[0-9]+$"))] | first')
+          test -n "$TAG" || { echo "No BareKit 2.x release found"; exit 1; }
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Latest BareKit release: $TAG"
+          echo "Newest BareKit 2.x release: $TAG"
 
       # Cache the tiny extracted classes.jar keyed on the release tag, so the ~370MB
       # prebuilds.zip is downloaded only when BareKit publishes a new release.
