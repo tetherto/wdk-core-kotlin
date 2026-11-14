@@ -45,7 +45,7 @@ dependencies {
 
 The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the **newest BareKit 2.x** release from [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release.
 
-**Engine: V8 only.** The 2.x Android prebuild ships the V8 engine, and that is the only engine this library is built and tested with. BareKit 3.x is a different distribution (it publishes no `prebuilds.zip`; Android support arrives through [bare-stow](https://github.com/holepunchto/bare-stow)) and is adopted in phase 3b of the [roadmap](https://github.com/tetherto/wdk-worklet-bundler/issues/84), so 3.x tags are rejected here. Other engines (JSC, QuickJS) come with that move; until then they are only possible with your own BareKit build — see the manual-placement section below.
+**Engine: V8 only.** The 2.x Android prebuild ships the V8 engine, and that is the only engine this library is built and tested with. BareKit 3.x is a different distribution (it publishes no `prebuilds.zip`; Android support arrives through [bare-stow](https://github.com/holepunchto/bare-stow)) and is adopted in phase 3b of the [roadmap](https://github.com/tetherto/wdk-worklet-bundler/issues/84), so 3.x tags are rejected here. Engine selection comes with that move; until then another engine means your own BareKit build — QuickJS works that way but is not recommended (see the manual-placement section below), and JSC on Android has not been tried.
 
 It's a **one-time, on-demand** fetch: it runs only when `libs/bare-kit/classes.jar` is missing, and **never during an Android Studio Gradle _sync_** (only during an actual build). So on a fresh clone the `to.holepunch.bare.kit.*` imports show unresolved until your first `./gradlew` build populates them — run one build (or Build ▸ Make if on Android Studio) and they resolve for good.
 
@@ -61,7 +61,7 @@ Override with Gradle properties:
 To force a re-fetch — e.g. after changing `-PbareKitTag` — delete `libs/bare-kit/`.
 
 <details>
-<summary>Manual placement (offline / your own BareKit build, e.g. QuickJS or JSC)</summary>
+<summary>Manual placement (offline mirror, or your own BareKit build such as QuickJS)</summary>
 
 If you'd rather supply it yourself, drop the BareKit Android files under `libs/bare-kit/` (or wherever `-PbareKitDir` points) in this layout; `fetchBareKit` then finds the `classes.jar` and skips:
 
@@ -84,7 +84,7 @@ libs/bare-kit/
         └── libc++_shared.so
 ```
 
-**Bringing your own engine (unsupported).** Holepunch ships no QuickJS or JSC prebuild for Android, but you can build BareKit 2.x yourself with another engine (its Android build takes the engine as the `BARE_ENGINE` CMake option, e.g. `github:holepunchto/libqjs`), unpack the resulting AAR into the layout above and point `-PbareKitDir` at it. Keep the `bare-node-runtime` override from [`js/package.json`](js/package.json) (see [`js/README.md`](js/README.md#pinned-dependencies)): it is what keeps a BareKit 2.x worklet booting. The same CJS bundle runs unchanged. We last validated QuickJS this way on 2026-11-09 and have not re-tested it since; you own the engine/runtime compatibility, and V8 is the recommendation until bare-stow manages engine selection.
+**Bringing your own engine (not recommended).** Holepunch ships no QuickJS or JSC prebuild for Android, but you can build BareKit 2.x yourself with another engine (its Android build takes the engine as the `BARE_ENGINE` CMake option, e.g. `github:holepunchto/libqjs`), unpack the resulting AAR into the layout above and point `-PbareKitDir` at it. Keep the `bare-node-runtime` override from [`js/package.json`](js/package.json) (see [`js/README.md`](js/README.md#pinned-dependencies)): it is what keeps a BareKit 2.x worklet booting. The same CJS bundle runs unchanged. This path is not recommended rather than unsupported: we last validated QuickJS this way on 2026-11-13 (BareKit 2.5.5 built with QuickJS, full instrumented suite passing), JSC on Android has not been tried, and the consuming team owns engine-specific issues — a problem that does not reproduce on V8 is yours to work around. V8 is the recommendation until bare-stow manages engine selection.
 </details>
 
 `build.gradle` wires these in via `jniLibs.srcDirs` (the `.so`) and `api files(bareKitClassesJar) { builtBy 'fetchBareKit' }` (the compile classpath), both relative to `-PbareKitDir`, so the fetch runs before compilation automatically.
@@ -279,6 +279,14 @@ Your App
 ```
 
 This is the **beta.17 line**: `@tetherto/wdk-worklet-bundler` and `@tetherto/pear-wrk-wdk` are pinned to `1.0.0-beta.17`, the last releases that speak JSON-RPC, running on BareKit 2.x with V8. The next line is built on [bare-stow](https://github.com/holepunchto/bare-stow) — a generated Kotlin harness, bare-rpc/HRPC instead of JSON-RPC, BareKit 3.x — see the [roadmap](https://github.com/tetherto/wdk-worklet-bundler/issues/84), phase 3b.
+
+## Known limitations
+
+Open on the BareKit 2.x line.
+
+- **Spark**: `getAddress` fails on Android ([#11](https://github.com/tetherto/wdk-core-kotlin/issues/11)). `@tetherto/wdk-wallet-spark` is not in the default `js/wdk.config.js`.
+- **Maven Central**: not published yet. Consume the library as a sibling Gradle module (Step 1); publishing is planned for the bare-stow line ([#17](https://github.com/tetherto/wdk-core-kotlin/issues/17)).
+- **16 KB page size**: this repository and the starter build with AGP 8.2.2, which zip-aligns the uncompressed native libraries at 4 KB. On a device running with 16 KB pages (the API 37 emulator image, for example) Android shows an "isn't 16 KB compatible" dialog at launch and runs the app in page-size compatibility mode. The `.so` files themselves are 16 KB-clean; the consuming app controls the packaging: build it with AGP 8.5.1+ (or run `zipalign -P 16`) to get an aligned APK, which Google Play requires for targetSdk 35+ updates since 2025-11-01. Tracked for the bare-stow line.
 
 ## Requirements
 

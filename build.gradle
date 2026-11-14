@@ -112,7 +112,7 @@ preBuild.dependsOn copyAddons, copyBundle
 // ships V8 (the `android/` dir of prebuilds.zip). BareKit 3.x is a different distribution (no
 // prebuilds.zip; Android arrives through bare-stow + bare-kit-kotlin) and is adopted in phase 3b of
 // tetherto/wdk-worklet-bundler#84, so 3.x tags are rejected here. To run another engine (QuickJS, JSC)
-// build BareKit 2.x yourself and point -PbareKitDir at it — unsupported, see README.md Step 2.
+// build BareKit 2.x yourself and point -PbareKitDir at it — not recommended, see README.md Step 2.
 //
 // Overrides: -PbareKitDir=<path> (use a pre-provisioned copy, including your own BareKit build),
 // -PbareKitTag=v2.<minor>.<patch> (pin a 2.x release instead of the newest one).
@@ -134,10 +134,15 @@ tasks.register('fetchBareKit') {
     outputs.dir bareKitDir
     // onlyIf is evaluated on EVERY run — including the very first, before Gradle has any task
     // history. A present jar therefore always skips the task.
-    // Delete libs/bare-kit (or point -PbareKitDir elsewhere) to force a re-fetch,
-    // e.g. after changing -PbareKitTag.
+    // Delete libs/bare-kit to force a re-fetch, e.g. after changing -PbareKitTag.
     onlyIf { !bareKitClassesJar.exists() }
     doLast {
+        // An explicit -PbareKitDir is the user's own copy (README.md, Step 2): it is never downloaded
+        // into, deleted or overwritten. Fail instead of fetching V8 over it.
+        if (project.hasProperty('bareKitDir')) {
+            throw new GradleException("-PbareKitDir=${bareKitDir}: classes.jar not found there. " +
+                "-PbareKitDir never downloads; it must hold BareKit's Android files in the layout from README.md, Step 2.")
+        }
         // Small JSON calls against the GitHub REST API. Accept selects GitHub's JSON media type;
         // User-Agent is required. Unauthenticated: public repo, well within the rate limit.
         def github = { String path ->

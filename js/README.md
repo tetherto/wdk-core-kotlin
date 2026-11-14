@@ -87,7 +87,7 @@ Different JS engines support different module systems:
 | ------ | ----- | ---- | ---- |
 | V8     | **This library** — the engine in every BareKit 2.x Android prebuild (`libbare-kit.so` ~65 MB per ABI, JIT) | ✅ | ✅ |
 | JSC    | `wdk-core-swift` runs V8 by default and offers JSC through a documented switch; discouraged, and the consuming team owns the known engine issues (e.g. the iOS 26 crash in tetherto/wdk-core-swift#22) | ❌ | ✅ |
-| QuickJS | No upstream Android prebuild; only via your own BareKit build (root README, Step 2) | ❌ | ✅ |
+| QuickJS | No upstream Android prebuild; works via your own BareKit build (root README, Step 2) — validated 2026-11-13, not recommended, engine-specific issues are the consuming team's to own | ❌ | ✅ |
 
 `convertEsmToCjs: true` makes the bundler run esbuild over the bundle's `.js`/`.mjs`/`.cjs` files and
 emit CommonJS. V8 runs that bundle as-is, and it is the only form a CJS-only engine can run, so the
@@ -98,8 +98,10 @@ validation error: those come from dependency drift, see the pinned dependencies 
 
 **V8, always.** `build.gradle`'s `fetchBareKit` task pulls the newest BareKit 2.x release and
 extracts its Android (V8) prebuild; there is no engine switch. QuickJS or JSC on Android means
-building BareKit 2.x yourself and pointing `-PbareKitDir` at the result — unsupported, not re-tested
-since 2026-11-09, and V8 is the recommendation until [bare-stow](https://github.com/holepunchto/bare-stow)
+building BareKit 2.x yourself and pointing `-PbareKitDir` at the result — not recommended rather than
+unsupported: QuickJS was last validated on 2026-11-13 (BareKit 2.5.5 built with QuickJS, full instrumented
+suite passing), JSC on Android has not been tried, engine-specific issues are the consuming team's to
+own, and V8 is the recommendation until [bare-stow](https://github.com/holepunchto/bare-stow)
 manages engine selection (roadmap: [tetherto/wdk-worklet-bundler#84](https://github.com/tetherto/wdk-worklet-bundler/issues/84), phase 3b).
 
 ## Pinned dependencies
@@ -117,8 +119,8 @@ instrumented suite on a device:
   `bare-worker/global` (`BroadcastChannel`, `MessageChannel`), which drags in `bare-thread` and a newer
   `bare-module` than BareKit 2.x embeds: the worklet aborts at its first request with
   `ModuleTraverseError: ADDON_NOT_FOUND` (tetherto/wdk-starter-kotlin#16). The pin is required on this
-  BareKit line, V8 included. It also matters for anyone still on the legacy QuickJS path:
+  BareKit line, V8 included. It also matters on the QuickJS path (your own BareKit build, not recommended):
   `BroadcastChannel` relies on N-API threading features that are experimental and not available in a
-  QuickJS build, so 1.5.1+ crashes there outright. QuickJS has not been re-tested since 2026-11-09 (it
-  passed then); we recommend V8 only until bare-stow upgrades this safely. The wallet packages declare
+  QuickJS build, so 1.5.1+ crashes there outright. QuickJS was last validated on 2026-11-13 with this
+  override in place; V8 remains the recommendation until bare-stow upgrades this safely. The wallet packages declare
   `bare-node-runtime ^1.5.2` but run fine on 1.5.0 — the full instrumented suite passes.
