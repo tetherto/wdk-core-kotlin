@@ -122,8 +122,8 @@ jobs:
 
       # Manual build: compile ONLY the Kotlin so CodeQL's Kotlin extractor observes the
       # compiler. --no-daemon keeps the compile in a fresh JVM the CodeQL tracer can
-      # instrument. We skip the JS worklet-bundle tasks — they pull from the private
-      # @tetherto npm registry (would need a secret) and are irrelevant to Kotlin analysis.
+      # instrument. We skip the JS worklet-bundle tasks — they need Node, an npm install, the
+      # bundler and the ~400 MB BareKit prebuild, and are irrelevant to Kotlin analysis.
       - name: Build Kotlin (manual)
         if: matrix.language == 'java-kotlin'
         run: |
