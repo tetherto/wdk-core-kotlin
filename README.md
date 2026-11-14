@@ -286,13 +286,13 @@ Open on the BareKit 2.x line.
 
 - **Spark**: `getAddress` fails on Android ([#11](https://github.com/tetherto/wdk-core-kotlin/issues/11)). `@tetherto/wdk-wallet-spark` is not in the default `js/wdk.config.js`.
 - **Maven Central**: not published yet. Consume the library as a sibling Gradle module (Step 1); publishing is planned for the bare-stow line ([#17](https://github.com/tetherto/wdk-core-kotlin/issues/17)).
-- **16 KB page size**: this repository and the starter build with AGP 8.2.2, which zip-aligns the uncompressed native libraries at 4 KB. On a device running with 16 KB pages (the API 37 emulator image, for example) Android shows an "isn't 16 KB compatible" dialog at launch and runs the app in page-size compatibility mode. The `.so` files themselves are 16 KB-clean; the consuming app controls the packaging: build it with AGP 8.5.1+ (or run `zipalign -P 16`) to get an aligned APK, which Google Play requires for targetSdk 35+ updates since 2025-11-01. Tracked for the bare-stow line.
 
 ## Requirements
 
 - Android `minSdk` 31, `compileSdk` 35
 - Kotlin 1.9.22+ with coroutines
 - JDK 17
+- Android Gradle Plugin 8.6.1 (a consumer that includes this module as a sibling must request the same version in its root `plugins` block), Gradle 8.7 wrapper, Android Studio Koala Feature Drop (2024.1.2) or newer
 - Node.js (for building the worklet bundle)
 - Supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` — all prebuilt; the Android NDK is only needed if you build BareKit yourself
 
