@@ -27,7 +27,12 @@ dependencies {
 
 **For now (local build):**
 
-Clone this repository alongside your app and include it as a Gradle module:
+Clone this repository alongside your app, check out the release you are integrating against (the `main` branch moves on to the next BareKit line), and include it as a Gradle module:
+
+```bash
+git clone https://github.com/tetherto/wdk-core-kotlin.git ../wdk-core-kotlin
+git -C ../wdk-core-kotlin checkout v0.9.0
+```
 
 ```kotlin
 // settings.gradle.kts
@@ -139,10 +144,15 @@ runBlocking {
     println("Backup phrase: $mnemonic")
 
     // Initialize WDK with network configuration
+    // Each network key must equal its "blockchain" field; the wallet package's own options
+    // go under "config" (for @tetherto/wdk-wallet-evm: "provider" is the RPC URL).
     val config = """
         {
           "networks": {
-            "ethereum": { "rpcUrl": "https://eth-mainnet.example.com" }
+            "ethereum": {
+              "blockchain": "ethereum",
+              "config": { "chainId": 1, "provider": "https://eth-mainnet.example.com" }
+            }
           }
         }
     """.trimIndent()
