@@ -9,6 +9,7 @@ plugins {
 def bareKitDir = file(project.findProperty('bareKitDir') ?: 'libs/bare-kit')
 def bareKitClassesJar = new File(bareKitDir, 'classes.jar')
 def bareKitTag = project.findProperty('bareKitTag')?.toString()
+def bareKitSha256 = project.findProperty('bareKitSha256')?.toString()?.toLowerCase()
 
 android {
     namespace 'to.tether.wdk.core'
@@ -98,6 +99,48 @@ tasks.register("copyBundle", Copy) {
 
 preBuild.dependsOn copyAddons, copyBundle
 
+// --- Test worklets ---
+// src/androidTest/fixtures/*.js are small worklets the instrumented tests start instead of the
+// real bundle (e.g. one that answers with an invalid frame). They are packed with bare-pack from
+// js/node_modules into a generated assets dir of the test APK, so only the JavaScript source is
+// committed — the same arrangement as wdk-core-swift's Tests/Fixtures. Pure JavaScript with no
+// addons, so one bundle serves every ABI. Not part of the library build: only the test APK's
+// asset merge depends on it.
+abstract class PackTestFixtures extends DefaultTask {
+    @InputDirectory abstract DirectoryProperty getFixturesDir()
+    @InputFile abstract RegularFileProperty getBarePack()
+    @OutputDirectory abstract DirectoryProperty getOutputDir()
+    @javax.inject.Inject abstract ExecOperations getExecOperations()
+
+    @TaskAction
+    void pack() {
+        def out = outputDir.get().asFile
+        out.deleteDir()
+        out.mkdirs()
+        def barePackPath = barePack.get().asFile.absolutePath
+        fixturesDir.get().asFile.listFiles().findAll { it.name.endsWith('.js') }.sort().each { js ->
+            def bundle = new File(out, js.name.replaceFirst(/\.js$/, '.bundle'))
+            // bash -lc: login shell so the nvm-managed Node that bare-pack runs on is on PATH.
+            execOperations.exec {
+                commandLine 'bash', '-lc', "'${barePackPath}' --out '${bundle.absolutePath}' '${js.absolutePath}'"
+            }
+        }
+    }
+}
+
+def packTestFixtures = tasks.register('packTestFixtures', PackTestFixtures) {
+    dependsOn npmInstall
+    fixturesDir = layout.projectDirectory.dir('src/androidTest/fixtures')
+    barePack = layout.projectDirectory.file('js/node_modules/.bin/bare-pack')
+    // outputDir is set by AGP below: a generated assets dir under build/ for the test APK.
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.androidTest?.sources?.assets?.addGeneratedSourceDirectory(packTestFixtures, { it.outputDir })
+    }
+}
+
 // --- BareKit native lib auto-fetch ---
 // WdkCore.kt compiles against to.holepunch.bare.kit.* (classes.jar) and packages the per-ABI
 // native libs (jni/) at runtime. Both come from BareKit's public GitHub releases
@@ -115,7 +158,8 @@ preBuild.dependsOn copyAddons, copyBundle
 // build BareKit 2.x yourself and point -PbareKitDir at it — not recommended, see README.md Step 2.
 //
 // Overrides: -PbareKitDir=<path> (use a pre-provisioned copy, including your own BareKit build),
-// -PbareKitTag=v2.<minor>.<patch> (pin a 2.x release instead of the newest one).
+// -PbareKitTag=v2.<minor>.<patch> (pin a 2.x release instead of the newest one),
+// -PbareKitSha256=<hex> (expected SHA-256 of prebuilds.zip instead of the digest GitHub reports).
 
 // Removed with the move to V8 only. Fail at configuration time so a stale script or
 // gradle.properties entry is noticed instead of silently fetching V8.
@@ -128,9 +172,12 @@ if (bareKitTag != null && !(bareKitTag ==~ /v2\.\d+\.\d+/)) {
         "BareKit 3.x publishes no prebuilds.zip and needs bare-stow; it arrives in phase 3b of " +
         "tetherto/wdk-worklet-bundler#84. See README.md, Step 2.")
 }
+if (bareKitSha256 != null && !(bareKitSha256 ==~ /[0-9a-f]{64}/)) {
+    throw new GradleException("-PbareKitSha256 must be the SHA-256 of prebuilds.zip as 64 hex digits (got '${bareKitSha256}').")
+}
 
 tasks.register('fetchBareKit') {
-    description 'Fetch BareKit classes.jar + native libs (V8) from a 2.x GitHub release if missing.'
+    description 'Fetch BareKit classes.jar + native libs (V8) from a 2.x GitHub release if missing, verifying the SHA-256 of prebuilds.zip.'
     outputs.dir bareKitDir
     // onlyIf is evaluated on EVERY run — including the very first, before Gradle has any task
     // history. A present jar therefore always skips the task.
@@ -174,16 +221,42 @@ tasks.register('fetchBareKit') {
             throw new GradleException("prebuilds.zip not found in BareKit release ${release.tag_name}")
         }
 
-        // 2) Download call: stream the actual zip bytes (buffered chunks, low RAM) to a temp FILE
-        //    on disk (the OS temp dir, not build/) — nothing platform-specific reaches libs/bare-kit yet.
+        // 2) Expected SHA-256 of prebuilds.zip. Default: the digest GitHub computed when the asset
+        //    was uploaded (the release API's asset.digest), so any 2.x tag is checked without a hash
+        //    kept here. That catches a corrupted or substituted download, not an asset replaced on
+        //    GitHub itself (the digest follows the asset): for that, pass -PbareKitSha256 with a
+        //    value you verified, which takes precedence.
+        def expectedSha256 = bareKitSha256
+        if (expectedSha256 == null) {
+            def digest = asset.digest?.toString()
+            if (digest == null || !digest.startsWith('sha256:')) {
+                throw new GradleException("GitHub reports no SHA-256 digest for ${asset.name} of ${release.tag_name}; " +
+                    "pass -PbareKitSha256=<hex> with a hash you verified to fetch it anyway.")
+            }
+            expectedSha256 = digest.substring('sha256:'.length()).toLowerCase()
+        }
+
+        // 3) Download call: stream the actual zip bytes (buffered chunks, low RAM) to a temp FILE
+        //    on disk (the OS temp dir, not build/), hashing them on the way — nothing platform-specific
+        //    reaches libs/bare-kit yet, and nothing does if the hash does not match.
         def tmpZip = File.createTempFile('barekit-', '.zip')
         try {
             logger.lifecycle("fetchBareKit: downloading ${asset.name} (~${(asset.size / 1024 / 1024) as int} MB) from ${release.tag_name}")
             def download = new URL(asset.browser_download_url).openConnection()
             download.setRequestProperty('User-Agent', 'wdk-core-kotlin-build')
-            download.inputStream.withStream { input -> tmpZip.withOutputStream { it << input } }
+            def sha256 = java.security.MessageDigest.getInstance('SHA-256')
+            new java.security.DigestInputStream(download.inputStream, sha256).withStream { input ->
+                tmpZip.withOutputStream { it << input }
+            }
+            def actualSha256 = sha256.digest().encodeHex().toString()
+            if (actualSha256 != expectedSha256) {
+                def source = bareKitSha256 != null ? "the -PbareKitSha256 you passed" : "the digest GitHub reports for the asset"
+                throw new GradleException("SHA-256 mismatch for ${asset.name} of ${release.tag_name}: expected ${expectedSha256} (${source}), " +
+                    "got ${actualSha256}. Nothing was written to ${bareKitDir}. Retry the build; if it persists, do not use this download.")
+            }
+            logger.lifecycle("fetchBareKit: SHA-256 of ${asset.name} verified: ${actualSha256}")
 
-            // 3) Extract ONLY android/bare-kit/** (the V8 Android build) into libs/bare-kit — other
+            // 4) Extract ONLY android/bare-kit/** (the V8 Android build) into libs/bare-kit — other
             //    platforms never reach that dir. If the dir isn't in the archive, fail listing what IS.
             def platformDir = 'android'
             def tree = zipTree(tmpZip)
