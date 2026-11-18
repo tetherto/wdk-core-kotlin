@@ -29,7 +29,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-class WdkCore(private val context: Context) : Closeable {
+class WdkCore internal constructor(
+    private val context: Context,
+    /** Name of the worklet bundle in the app's assets; tests point it at a fixture bundle. */
+    private val bundleAssetName: String
+) : Closeable {
+    constructor(context: Context) : this(context, BUNDLE_ASSET_NAME)
+
     private val worklet = Worklet(null)
     private var ipc: IPC? = null
     private val requestId = AtomicInteger(0)
@@ -44,6 +50,9 @@ class WdkCore(private val context: Context) : Closeable {
     private val pendingRequests = ConcurrentHashMap<Int, CompletableDeferred<JSONObject>>()
 
     private var readerJob: Job? = null
+    // Set when the reader loop ends, with the error that ended it. No response can arrive after
+    // that, so call() refuses new requests with the same error instead of waiting forever.
+    @Volatile private var readerError: WdkError? = null
     private val readerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // Only protects IPC writes — reads are dispatched by the single reader coroutine
@@ -59,8 +68,8 @@ class WdkCore(private val context: Context) : Closeable {
         ipcHandler = Handler(thread.looper)
 
         withContext(Dispatchers.IO) {
-            val inputStream = context.assets.open("wdk.bundle")
-            worklet.start("/wdk.bundle", inputStream, null)
+            val inputStream = context.assets.open(bundleAssetName)
+            worklet.start("/$bundleAssetName", inputStream, null)
         }
 
         delay(500)
@@ -99,8 +108,10 @@ class WdkCore(private val context: Context) : Closeable {
     // -- Reader loop (single coroutine that owns all read-side state) --
 
     private fun startReaderLoop() {
+        readerError = null
         readerJob = readerScope.launch {
             var readBuffer = ByteArray(0)
+            var failure: WdkError = WdkError.IpcError("Connection closed")
             try {
                 while (isActive && !closed.get()) {
                     readBuffer = accumulate(readBuffer, 4)
@@ -108,7 +119,10 @@ class WdkCore(private val context: Context) : Closeable {
                     val length = ByteBuffer.wrap(readBuffer, 0, 4)
                         .order(ByteOrder.BIG_ENDIAN).int
 
-                    if (length !in 1..9_999_999) break
+                    if (length !in 1..9_999_999) {
+                        failure = WdkError.IpcError("Invalid message length: $length")
+                        break
+                    }
 
                     val frameEnd = 4 + length
                     readBuffer = accumulate(readBuffer, frameEnd)
@@ -126,7 +140,7 @@ class WdkCore(private val context: Context) : Closeable {
                 }
             } catch (_: CancellationException) {
             } finally {
-                rejectAllPending()
+                readerFailed(failure)
             }
         }
     }
@@ -148,8 +162,13 @@ class WdkCore(private val context: Context) : Closeable {
         return buf
     }
 
-    private fun rejectAllPending() {
-        val error = WdkError.IpcError("Connection closed")
+    /** Records [error] as the end of the reader loop and rejects every in-flight request with it. */
+    private fun readerFailed(error: WdkError) {
+        readerError = error
+        rejectAllPending(error)
+    }
+
+    private fun rejectAllPending(error: WdkError) {
         val iter = pendingRequests.entries.iterator()
         while (iter.hasNext()) {
             val entry = iter.next()
@@ -201,6 +220,12 @@ class WdkCore(private val context: Context) : Closeable {
 
         val deferred = CompletableDeferred<JSONObject>()
         pendingRequests[id] = deferred
+        // Registered first, then checked: a reader that ends in between sweeps this entry; one
+        // that ended before leaves nothing to answer, so refuse without sending.
+        readerError?.let { error ->
+            pendingRequests.remove(id)
+            throw error
+        }
 
         try {
             writeFramed(requestData)
@@ -400,7 +425,7 @@ class WdkCore(private val context: Context) : Closeable {
         // 2. Cancel reader & reject pending
         readerJob?.cancel()
         readerScope.cancel()
-        rejectAllPending()
+        rejectAllPending(WdkError.IpcError("Connection closed"))
         incomingData.clear()
 
         // 3. Stop handler thread (quits the ALooper, prevents further native callbacks)
@@ -429,5 +454,9 @@ class WdkCore(private val context: Context) : Closeable {
     fun resume() {
         if (closed.get()) return
         worklet.resume()
+    }
+
+    private companion object {
+        const val BUNDLE_ASSET_NAME = "wdk.bundle"
     }
 }

@@ -43,7 +43,7 @@ dependencies {
 > Note: See build.gradle from wdk-starter-kotlin for a [reference](https://github.com/Tetherto/wdk-starter-kotlin)
 ### Step 2: BareKit Android Runtime (fetched automatically)
 
-The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the **newest BareKit 2.x** release from [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release.
+The library depends on Holepunch's BareKit Android runtime — a `classes.jar` to compile against plus per-ABI native `.so` libraries. These are **not committed** here (hundreds of MB), and you normally don't provide them by hand: the `fetchBareKit` Gradle task downloads the **newest BareKit 2.x** release from [`holepunchto/bare-kit`](https://github.com/holepunchto/bare-kit/releases) and extracts just the Android files into `libs/bare-kit/`. No secrets or auth — it's a public release. Before anything is extracted, the download is checked against the SHA-256 digest GitHub reports for that release asset; a mismatch fails the build and leaves `libs/bare-kit/` untouched.
 
 **Engine: V8 only.** The 2.x Android prebuild ships the V8 engine, and that is the only engine this library is built and tested with. BareKit 3.x is a different distribution (it publishes no `prebuilds.zip`; Android support arrives through [bare-stow](https://github.com/holepunchto/bare-stow)) and is adopted in phase 3b of the [roadmap](https://github.com/tetherto/wdk-worklet-bundler/issues/84), so 3.x tags are rejected here. Engine selection comes with that move; until then another engine means your own BareKit build — QuickJS works that way but is not recommended (see the manual-placement section below), and JSC on Android has not been tried.
 
@@ -55,6 +55,7 @@ Override with Gradle properties:
 | -------- | ------- | ------ |
 | `-PbareKitTag=<tag>` | newest 2.x release | Pin a specific BareKit **2.x** release (`v2.<minor>.<patch>`). Anything else — including any 3.x tag — is rejected at configuration time. |
 | `-PbareKitDir=<path>` | `libs/bare-kit` | Use a pre-provisioned copy (air-gapped mirror, or your own BareKit build — see below) instead of downloading. Both the `classes.jar` and the `jni/` libraries are taken from there. |
+| `-PbareKitSha256=<hex>` | the digest GitHub reports for the asset | Expected SHA-256 of `prebuilds.zip`. GitHub's digest catches a corrupted or substituted download, but it follows the asset if the release itself is changed on GitHub; pass the hash of the archive you verified to pin exactly that one (for example in your root `gradle.properties` as `bareKitSha256=<hex>`). |
 
 `-PbareKitEngine` no longer exists; passing it fails the build with a pointer to `-PbareKitDir`.
 
